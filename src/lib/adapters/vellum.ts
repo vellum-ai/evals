@@ -54,26 +54,6 @@ function setupCommands(profile: Profile): string[] {
 }
 
 /**
- * Feature flags every vellum-species hatch turns on before any setup
- * commands fire.
- *
- * Lives as a hardcoded constant — not a manifest field — because the
- * baseline gated surfaces a vellum assistant ships with are a property
- * of the species, not of an individual profile. If a hypothetical
- * future vellum profile ever needs a flag OFF, the fix is to widen
- * this constant into a (species default) ∪ (manifest override) merge
- * — but YAGNI until that profile exists.
- *
- * Ordered alphabetically by key so that:
- *   - run logs and `subprocess-feature-flag-N.log` filenames are
- *     deterministic across runs;
- *   - tests assert on the recorded call sequence without relying on
- *     object-literal insertion order.
- */
-const VELLUM_DEFAULT_FEATURE_FLAGS: ReadonlyArray<readonly [string, boolean]> =
-  [] as const;
-
-/**
  * Canonical environment variable names for LLM provider API keys.
  *
  * Mirrors the LLM half of `cli/src/shared/provider-env-vars.ts`. Duplicated
@@ -375,42 +355,6 @@ export class VellumAgent implements BaseAgent {
       // in the catch path.
       hatchSucceeded = true;
 
-      // Apply species-default feature flags BEFORE setup commands.
-      // Setup commands execute inside the assistant container via
-      // `vellum exec`, but flag overrides live on the host gateway —
-      // so any setup step that depends on a gated surface needs
-      // the flag flipped first. `vellum flags set --assistant <id>`
-      // targets this specific instance without mutating the user's
-      // active-assistant pointer.
-      // The list is currently empty (no species default flags), but
-      // the loop is kept as infrastructure for future flags.
-      for (const [
-        idx,
-        [key, value],
-      ] of VELLUM_DEFAULT_FEATURE_FLAGS.entries()) {
-        const flagStep = await this.runner.run(
-          this.cliCommand,
-          [
-            "flags",
-            "set",
-            key,
-            value ? "true" : "false",
-            "--assistant",
-            this.id,
-          ],
-          {
-            logPath:
-              runArtifacts(this.id).runDir +
-              `/subprocess-feature-flag-${idx + 1}.log`,
-            logStep: `feature-flag-${idx + 1}`,
-          },
-        );
-        assertSuccess(
-          flagStep,
-          `vellum species default feature flag "${key}=${value}" for profile ${this.profile.id}`,
-        );
-      }
-
       for (const [idx, command] of setupCommands(this.profile).entries()) {
         const setup = await this.runner.run(
           this.cliCommand,
@@ -434,8 +378,7 @@ export class VellumAgent implements BaseAgent {
       // diagnostics-capture error.
       await this.captureContainerForensics().catch(() => undefined);
       if (hatchSucceeded) {
-        // Hatch returned 0 but a later step (feature flags, setup
-        // commands) threw — we own the tenant containers. Retire them
+        // Hatch returned 0 but a later step (setup commands) threw — we own the tenant containers. Retire them
         // BEFORE stopping the jail: they share the jail's network
         // namespace, so the jail can't be removed while they exist.
         await this.runRetireWithReaperFallback("hatch-catch");

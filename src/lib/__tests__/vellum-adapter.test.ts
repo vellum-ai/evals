@@ -234,7 +234,7 @@ describe("VellumAgent", () => {
     ]);
   });
 
-  test("setup commands run after hatch with no species default flags to apply", async () => {
+  test("setup commands run after hatch", async () => {
     const runner = new FakeRunner();
     // Ordering invariant: setup commands come AFTER hatch (runs[5]).
     // `--assistant <this.id>` is passed explicitly so the user's
@@ -286,8 +286,8 @@ describe("VellumAgent", () => {
     const runner = new FakeRunner();
     // The "no setup commands" case is structurally distinct —
     // `vellum-default` exists precisely to exercise the bare species
-    // path. With no species default flags and no setup commands, the
-    // run is just the jail lifecycle + hatch.
+    // path. With no setup commands, the run is just the jail lifecycle
+    // + hatch.
     const bareProfile: Profile = {
       id: "vellum-default",
       manifest: { species: "vellum" },
@@ -305,7 +305,7 @@ describe("VellumAgent", () => {
     await agent.hatch();
 
     // jail lifecycle (rm / network rm / build / network create / run) +
-    // hatch = 6. No species default flags, no setup commands.
+    // hatch = 6. No setup commands.
     expect(runner.runs.length).toBe(6);
     expect(runner.runs[5].args[0]).toBe("hatch");
   });

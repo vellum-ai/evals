@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - 'src/**'
-      - 'benchmarks/**'
-      - 'profiles/**'
-      - 'docker/**'
-      - '.github/workflows/ci-pr.yaml'
+      - "src/**"
+      - "benchmarks/**"
+      - "profiles/**"
+      - "docker/**"
+      - ".github/workflows/ci-pr.yaml"
 
 jobs:
   evals-checks:
@@ -22,7 +22,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.3.11'
+          bun-version: "1.3.11"
 
       - name: Install dependencies
         run: bun install
@@ -88,7 +88,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Test recording usage parser
         working-directory: src/lib/egress/recording

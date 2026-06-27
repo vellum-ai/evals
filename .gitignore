@@ -1,0 +1,12 @@
+.env
+results/
+runs/
+*.local.json
+
+.runs/
+node_modules/
+bun.lock
+
+# Python sidecar artifacts
+__pycache__/
+*.pyc

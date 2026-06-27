@@ -59,12 +59,10 @@ function setupCommands(profile: Profile): string[] {
  *
  * Lives as a hardcoded constant — not a manifest field — because the
  * baseline gated surfaces a vellum assistant ships with are a property
- * of the species, not of an individual profile. A reader of a profile's
- * `manifest.json` doesn't need to opt into `external-plugins` to use
- * `assistant plugins install` in `setup`; that's the species default.
- * If a hypothetical future vellum profile ever needs the flag OFF, the
- * fix is to widen this constant into a (species default) ∪ (manifest
- * override) merge — but YAGNI until that profile exists.
+ * of the species, not of an individual profile. If a hypothetical
+ * future vellum profile ever needs a flag OFF, the fix is to widen
+ * this constant into a (species default) ∪ (manifest override) merge
+ * — but YAGNI until that profile exists.
  *
  * Ordered alphabetically by key so that:
  *   - run logs and `subprocess-feature-flag-N.log` filenames are
@@ -73,7 +71,7 @@ function setupCommands(profile: Profile): string[] {
  *     object-literal insertion order.
  */
 const VELLUM_DEFAULT_FEATURE_FLAGS: ReadonlyArray<readonly [string, boolean]> =
-  [["external-plugins", true]] as const;
+  [] as const;
 
 /**
  * Canonical environment variable names for LLM provider API keys.
@@ -380,11 +378,12 @@ export class VellumAgent implements BaseAgent {
       // Apply species-default feature flags BEFORE setup commands.
       // Setup commands execute inside the assistant container via
       // `vellum exec`, but flag overrides live on the host gateway —
-      // so any setup step that depends on a gated surface (e.g.
-      // `assistant plugins install` gated by `external-plugins`) needs
+      // so any setup step that depends on a gated surface needs
       // the flag flipped first. `vellum flags set --assistant <id>`
       // targets this specific instance without mutating the user's
       // active-assistant pointer.
+      // The list is currently empty (no species default flags), but
+      // the loop is kept as infrastructure for future flags.
       for (const [
         idx,
         [key, value],

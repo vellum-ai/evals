@@ -197,26 +197,8 @@ describe("VellumAgent", () => {
       logPath: expect.stringMatching(/\/subprocess-hatch\.log$/),
       logStep: "hatch",
     });
-    // Species default feature flag — runs after hatch and before the
-    // first setup command. See VELLUM_DEFAULT_FEATURE_FLAGS in the
-    // adapter for the canonical list.
-    expect(runner.runs[6]).toEqual({
-      command: "vellum",
-      args: [
-        "flags",
-        "set",
-        "external-plugins",
-        "true",
-        "--assistant",
-        "eval-run-1",
-      ],
-      opts: {
-        logPath: expect.stringMatching(/\/subprocess-feature-flag-1\.log$/),
-        logStep: "feature-flag-1",
-      },
-    });
     // Setup command — gets a per-step subprocess-setup-N.log
-    expect(runner.runs[7]).toEqual({
+    expect(runner.runs[6]).toEqual({
       command: "vellum",
       args: [
         "exec",
@@ -252,16 +234,11 @@ describe("VellumAgent", () => {
     ]);
   });
 
-  test("applies vellum species default flags via `vellum flags set --assistant <id>` BEFORE setup commands", async () => {
+  test("setup commands run after hatch with no species default flags to apply", async () => {
     const runner = new FakeRunner();
-    // Ordering invariants under test:
-    //   (a) species default flags come AFTER hatch (runs[5]) but
-    //       BEFORE any setup command — gated setup steps (e.g.
-    //       `assistant plugins install`) depend on the flag being
-    //       flipped first.
-    //   (b) `--assistant <this.id>` is passed explicitly so the
-    //       user's active-assistant pointer is never mutated by an
-    //       eval run.
+    // Ordering invariant: setup commands come AFTER hatch (runs[5]).
+    // `--assistant <this.id>` is passed explicitly so the user's
+    // active-assistant pointer is never mutated by an eval run.
     const profileWithSetup: Profile = {
       id: "vellum-simple-memory",
       manifest: {
@@ -283,33 +260,12 @@ describe("VellumAgent", () => {
 
     // runs[0..4] are the jail lifecycle (rm / network rm / build /
     // network create / run); runs[5] is hatch joining the assistant
-    // into the jail's namespace. Confirm the count to anchor the
-    // indices: 6 pre-flag steps + 1 species default flag
-    // (`external-plugins`) + 1 setup command = 8.
-    expect(runner.runs.length).toBe(8);
+    // into the jail's namespace. 6 pre-setup steps + 1 setup = 7.
+    expect(runner.runs.length).toBe(7);
     expect(runner.runs[5].args[0]).toBe("hatch");
 
-    // Species default: `external-plugins` is always flipped ON for
-    // vellum hatches, regardless of manifest contents.
+    // Setup command lands right after hatch.
     expect(runner.runs[6]).toEqual({
-      command: "vellum",
-      args: [
-        "flags",
-        "set",
-        "external-plugins",
-        "true",
-        "--assistant",
-        "eval-run-2",
-      ],
-      opts: {
-        logPath: expect.stringMatching(/\/subprocess-feature-flag-1\.log$/),
-        logStep: "feature-flag-1",
-      },
-    });
-
-    // Setup command lands AFTER the species default flag — this is the
-    // chicken-and-egg property the ordering protects.
-    expect(runner.runs[7]).toEqual({
       command: "vellum",
       args: [
         "exec",
@@ -326,13 +282,12 @@ describe("VellumAgent", () => {
     });
   });
 
-  test("species default flags still apply to a profile with no setup commands (the bare vellum case)", async () => {
+  test("bare vellum profile with no setup commands runs only jail lifecycle + hatch", async () => {
     const runner = new FakeRunner();
-    // The "no setup commands" case is structurally distinct from "no
-    // flags" — `vellum-default` exists precisely to exercise the bare
-    // species path. Even with zero setup commands, the species default
-    // flag must land so a downstream test that calls `assistant
-    // plugins install` from inside the agent doesn't trip the gate.
+    // The "no setup commands" case is structurally distinct —
+    // `vellum-default` exists precisely to exercise the bare species
+    // path. With no species default flags and no setup commands, the
+    // run is just the jail lifecycle + hatch.
     const bareProfile: Profile = {
       id: "vellum-default",
       manifest: { species: "vellum" },
@@ -350,23 +305,9 @@ describe("VellumAgent", () => {
     await agent.hatch();
 
     // jail lifecycle (rm / network rm / build / network create / run) +
-    // hatch + 1 species default flag = 7. No setup commands.
-    expect(runner.runs.length).toBe(7);
-    expect(runner.runs[6]).toEqual({
-      command: "vellum",
-      args: [
-        "flags",
-        "set",
-        "external-plugins",
-        "true",
-        "--assistant",
-        "eval-run-3",
-      ],
-      opts: {
-        logPath: expect.stringMatching(/\/subprocess-feature-flag-1\.log$/),
-        logStep: "feature-flag-1",
-      },
-    });
+    // hatch = 6. No species default flags, no setup commands.
+    expect(runner.runs.length).toBe(6);
+    expect(runner.runs[5].args[0]).toBe("hatch");
   });
 
   test("forwards LLM provider API keys from process env into the hatch subprocess", async () => {

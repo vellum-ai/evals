@@ -6,6 +6,7 @@ import type {
   AgentHatchInput,
   AgentMessage,
   BaseAgent,
+  WorkspaceFileWrite,
 } from "../adapter";
 import type { Profile } from "../profile";
 import type {
@@ -820,6 +821,37 @@ export class HermesAgent implements BaseAgent {
       },
     );
     assertSuccess(write, `stage workspace file ${input.path} into ${this.id}`);
+  }
+
+  /**
+   * Write a file into the agent's workspace directory. Delegates to the
+   * same `stageWorkspaceFile` used by `runSetupCommand("stage-workspace-file")`
+   * so the ownership and path-safety rules are identical. Required by
+   * `runIngestAsk` for the LongMemEval-V2 two-conversation flow, which
+   * stages the haystack before the ingest message.
+   */
+  async writeWorkspaceFile(input: WorkspaceFileWrite): Promise<void> {
+    this.assertHatched();
+    await this.stageWorkspaceFile(input);
+  }
+
+  /**
+   * Reset the conversation history while keeping the same hatched
+   * container and workspace files. Hermes is a one-shot CLI adapter —
+   * "conversation" state lives in the in-memory `liveTurns` array that
+   * gets replayed into each `hermes -z` prompt. Clearing it and rotating
+   * the conversation key gives the caller a fresh conversation B that
+   * cannot see conversation A's chat history, matching the Vellum
+   * adapter's `newConversation()` contract.
+   */
+  async newConversation(): Promise<void> {
+    this.assertHatched();
+    this.liveTurns.length = 0;
+    this.conversationKey = `evals:${this.testId}:${this.id}:${Date.now()}`;
+    // Rotate the event sink so a new collector subscribing via events()
+    // gets a fresh queue, not leftover events from the prior conversation.
+    this.eventSink?.close();
+    this.eventSink = undefined;
   }
 
   /**

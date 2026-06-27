@@ -68,16 +68,19 @@ export interface IngestAskInput {
    */
   questionMessage: string;
   /**
-   * Quiet timeout in milliseconds for the *question* turn's event drain —
-   * how long the stream may go silent (no new events) before the turn is
-   * treated as finished. Defaults to 30s. This is *not* the overall time
-   * limit: a turn that keeps streaming (e.g. long extended-thinking +
-   * on-demand retrieval) runs until the `questionMaxMs` wall-clock cap
-   * below, however many events it emits. The ingest turn uses
-   * `ingestQuietMs` / `ingestMaxMs` instead, because its silence semantics
-   * differ.
+   * @deprecated Use `questionGraceQuietMs` instead. Previously the
+   * quiet timeout for the question turn's event drain; the question turn
+   * now uses `collectUntilTurnComplete` (driven by `message_complete`)
+   * with `questionGraceQuietMs` as the trailing-event grace period.
+   * Retained in the interface for backwards-compatible callers.
    */
   quietMs?: number;
+  /**
+   * Grace period (ms) after `message_complete` to drain trailing events
+   * (usage records, sync notifications) before returning the question-turn
+   * events. Defaults to 5 seconds — these events arrive within 1-2s.
+   */
+  questionGraceQuietMs?: number;
   /**
    * Hard wall-clock cap (ms) for the *question* turn. The turn ends when
    * the stream goes quiet for `quietMs`, the stream closes, or this much
@@ -140,6 +143,15 @@ export interface IngestAskResult {
    * error.
    */
   questionAnswered: boolean;
+  /**
+   * Whether the daemon's turn-completion signal (`message_complete`) arrived
+   * before the `questionMaxMs` wall-clock cap. `true` means the agent
+   * finished its turn (even if it produced no text); `false` means the cap
+   * elapsed or the stream ended mid-turn. Callers can use this to
+   * distinguish "agent finished but said nothing" from "agent timed out"
+   * in the metric reason.
+   */
+  questionCompleted: boolean;
   /** Raw events captured during conversation A's drain. */
   ingestEvents: AgentEvent[];
   /** Raw events captured during conversation B's drain. */
@@ -167,7 +179,13 @@ export interface IngestAskResult {
   ingestSentinelSeen: boolean;
 }
 
-const DEFAULT_QUIET_MS = 30_000;
+/**
+ * Grace period after `message_complete` to capture trailing events
+ * (usage records, sync notifications) before returning the question-turn
+ * events. These events typically arrive within 1-2 seconds; 5s is
+ * generous while avoiding the 30s wasted by the old default.
+ */
+const DEFAULT_QUESTION_GRACE_QUIET_MS = 5_000;
 /**
  * Default hard wall-clock cap for the question turn: 10 minutes. Generous
  * enough for a retrieval-heavy turn (on-demand `file_read`/`grep` over the
@@ -250,7 +268,8 @@ function joinAssistantText(events: readonly AgentEvent[]): string {
 export async function runIngestAsk(
   input: IngestAskInput,
 ): Promise<IngestAskResult> {
-  const quietMs = input.quietMs ?? DEFAULT_QUIET_MS;
+  const questionGraceQuietMs =
+    input.questionGraceQuietMs ?? DEFAULT_QUESTION_GRACE_QUIET_MS;
   const questionMaxMs = input.questionMaxMs ?? DEFAULT_QUESTION_MAX_MS;
   const ingestQuietMs = input.ingestQuietMs ?? DEFAULT_INGEST_QUIET_MS;
   const ingestSentinel = input.ingestSentinel ?? DEFAULT_INGEST_SENTINEL;
@@ -347,6 +366,7 @@ export async function runIngestAsk(
         isDone: (events) => isIngestDone(joinAssistantText(events)),
         maxMs: ingestMaxMs,
         quietMs: ingestQuietMs,
+        graceQuietMs: 5_000,
         onEvent: autoConfirm,
       });
     if (ingestEvents.length === 0) {
@@ -371,9 +391,26 @@ export async function runIngestAsk(
     // report UI can group it under the Ingest conversation pane.
     const ingestResponseText = joinAssistantText(ingestEvents).trim();
     if (ingestResponseText) {
+      // Use the message_complete event timestamp (or the last text
+      // delta) as the turn end, NOT the last event in the array.
+      // collectUntilSentinel now short-circuits on the sentinel and
+      // drains only 5s of trailing events, but unrelated trailing
+      // events (disk_pressure, sync_changed) can still arrive and
+      // inflate the timestamp.
       const ingestEndStamp = (() => {
         for (let i = ingestEvents.length - 1; i >= 0; i--) {
-          if (ingestEvents[i].emittedAt) return ingestEvents[i].emittedAt!;
+          const msg = ingestEvents[i].message;
+          if (msg.type === "message_complete" && ingestEvents[i].emittedAt) {
+            return ingestEvents[i].emittedAt!;
+          }
+        }
+        // Fallback: last event with text content (the actual response).
+        for (let i = ingestEvents.length - 1; i >= 0; i--) {
+          const text =
+            ingestEvents[i].message.text ?? ingestEvents[i].message.chunk;
+          if (text && text.trim() && ingestEvents[i].emittedAt) {
+            return ingestEvents[i].emittedAt!;
+          }
         }
         return ingestSendTime;
       })();
@@ -412,11 +449,21 @@ export async function runIngestAsk(
       conversationKey: questionConversationKey,
     }).catch(() => undefined);
     await agent.send({ content: input.questionMessage });
-    const questionEvents = await questionCollector.collectUntilQuiet({
-      quietMs,
-      maxMs: questionMaxMs,
-      onEvent: autoConfirm,
-    });
+    // Use `collectUntilTurnComplete` instead of `collectUntilQuiet` so the
+    // collector waits for the daemon's `message_complete` signal rather
+    // than cutting the turn short after `quietMs` of event silence. A long
+    // LLM call (extended thinking + generation) can stream zero events for
+    // 30+ seconds while the model is actively producing a response; a
+    // quiet-window collector would abandon the turn mid-call and capture
+    // an empty hypothesis even though the agent answered. The turn-
+    // completion signal is the authoritative "done" marker.
+    const { events: questionEvents, completed: questionCompleted } =
+      await questionCollector.collectUntilTurnComplete({
+        isComplete: (event) => agent.isTurnComplete(event),
+        maxMs: questionMaxMs,
+        graceQuietMs: questionGraceQuietMs,
+        onEvent: autoConfirm,
+      });
     if (questionEvents.length === 0) {
       throw new IngestAskError(
         `Question turn produced no events for conversation ${questionConversationKey}.`,
@@ -461,6 +508,7 @@ export async function runIngestAsk(
       questionConversationKey,
       hypothesis,
       questionAnswered: hypothesis.trim() !== "",
+      questionCompleted,
       ingestEvents,
       questionEvents,
       recordedUsage,

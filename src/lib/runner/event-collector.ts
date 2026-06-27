@@ -72,34 +72,77 @@ export class AgentEventCollector {
 
   /**
    * Like `collectUntilQuiet`, but reports whether the turn completed via
-   * an explicit completion signal rather than treating "events stopped
-   * arriving" as success.
+   * an explicit completion signal (the sentinel) rather than treating
+   * "events stopped arriving" as success.
    *
-   * The turn is still drained to quiet (or `maxMs`) so trailing events
-   * that arrive *after* the agent's completion line — e.g. the
-   * `assistant_usage` / `message_complete` events the daemon emits at the
-   * end of a turn — are captured for cost accounting. We do not stop the
-   * instant the sentinel appears.
+   * Events are collected until `isDone` returns `true` against the
+   * accumulated event list, or the `maxMs` hard cap elapses. Once the
+   * sentinel is seen, trailing events (e.g. `message_complete`,
+   * `assistant_usage`) are drained with a short `graceQuietMs` window
+   * (default 5s) so cost-accounting events are captured without waiting
+   * the full `quietMs` (e.g. 120s). This cuts the ingest-to-question
+   * gap from ~120s to ~5s on a typical run.
    *
-   * `isDone` is evaluated against the full captured event list once the
-   * drain settles, keeping content semantics (what counts as the
-   * sentinel) out of the collector. A `false` result means the turn went
-   * quiet or hit the hard cap without ever signalling completion (a
-   * truncated or stalled ingest), letting the caller fail loudly instead
-   * of grading it.
+   * `isDone` is evaluated against the full captured event list after
+   * each event arrives, keeping content semantics (what counts as the
+   * sentinel) out of the collector. A `false` result means the stream
+   * went quiet or hit the hard cap without ever signalling completion
+   * (a truncated or stalled ingest), letting the caller fail loudly
+   * instead of grading it.
    */
   async collectUntilSentinel(input: {
     isDone: (events: readonly AgentEvent[]) => boolean;
     maxMs: number;
     quietMs: number;
+    /** Grace period after sentinel to capture trailing events. Default 5s. */
+    graceQuietMs?: number;
     onEvent?: (event: AgentEvent) => void | Promise<void>;
   }): Promise<{ events: AgentEvent[]; sentinelSeen: boolean }> {
-    const events = await this.drain({
-      quietMs: input.quietMs,
-      maxMs: input.maxMs,
-      onEvent: input.onEvent,
-    });
-    return { events, sentinelSeen: input.isDone(events) };
+    const graceQuietMs = input.graceQuietMs ?? 5_000;
+    const hardDeadline = Date.now() + input.maxMs;
+    const events: AgentEvent[] = [];
+    let sentinelSeen = false;
+
+    // Phase 1: collect events until the sentinel appears, the inter-event
+    // gap exceeds `quietMs` (a stalled turn), or the hard cap elapses.
+    // Unlike collectUntilQuiet there is no quiet window *after* the
+    // sentinel — the sentinel short-circuits immediately. But `quietMs`
+    // still serves as an inter-event safety net: if no event arrives
+    // within `quietMs` and the sentinel hasn't been seen, the turn is
+    // stalled and we stop rather than waiting the full `maxMs`.
+    let quietDeadline = Date.now() + input.quietMs;
+    while (!sentinelSeen) {
+      const waitMs = Math.max(
+        0,
+        Math.min(quietDeadline, hardDeadline) - Date.now(),
+      );
+      if (waitMs <= 0) break;
+
+      const result = await Promise.race([this.next(), timeout(waitMs)]);
+      if (result === TIMEOUT) break;
+
+      this.pending = undefined;
+      if (result.done) break;
+
+      events.push(result.value);
+      if (input.onEvent) await input.onEvent(result.value);
+      sentinelSeen = input.isDone(events);
+      quietDeadline = Date.now() + input.quietMs;
+    }
+
+    // Phase 2: drain trailing events (message_complete, usage records,
+    // sync notifications) with a short grace window so they're captured
+    // for cost accounting without waiting the full quietMs.
+    if (sentinelSeen) {
+      const trailing = await this.drain({
+        quietMs: graceQuietMs,
+        maxMs: Math.max(0, hardDeadline - Date.now()),
+        onEvent: input.onEvent,
+      });
+      events.push(...trailing);
+    }
+
+    return { events, sentinelSeen };
   }
 
   /**

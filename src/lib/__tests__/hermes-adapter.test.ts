@@ -1147,4 +1147,90 @@ describe("buildHermesTurnPrompt", () => {
       prompt.indexOf("Which category was largest?"),
     );
   });
+
+  test("writeWorkspaceFile stages a file into the container workspace", async () => {
+    const runner = new FakeRunner();
+    const agent = new HermesAgent({
+      runner,
+      profile,
+      testId: "restaurant-pnl-spend",
+      runId: "eval-hermes-write",
+      processEnv: {},
+    });
+
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
+    const baseline = runner.runs.length;
+
+    await agent.writeWorkspaceFile!({
+      path: "haystack.json",
+      content: '{"key":"value"}',
+    });
+
+    const newRuns = runner.runs.slice(baseline);
+    // Same docker exec pattern as stage-workspace-file
+    expect(newRuns[1].stdin).toBe('{"key":"value"}');
+    expect(newRuns[1].args).toContain("/workspace/haystack.json");
+  });
+
+  test("writeWorkspaceFile refuses before hatch", async () => {
+    const agent = new HermesAgent({
+      runner: new FakeRunner(),
+      profile,
+      testId: "restaurant-pnl-spend",
+      processEnv: {},
+    });
+
+    await expect(
+      agent.writeWorkspaceFile!({ path: "x.txt", content: "hi" }),
+    ).rejects.toThrow(/has not been hatched/);
+  });
+
+  test("newConversation clears liveTurns and rotates conversationKey", async () => {
+    const runner = new FakeRunner();
+    const agent = new HermesAgent({
+      runner,
+      profile,
+      testId: "timeline-recall",
+      runId: "eval-hermes-newconv",
+      processEnv: {},
+    });
+
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
+    const originalKey = agent.conversationKey;
+
+    // Simulate some conversation history
+    agent.events();
+    await agent.send({ content: "first message" });
+
+    // When newConversation is called
+    await agent.newConversation!();
+
+    // Then the conversation key rotates
+    expect(agent.conversationKey).not.toBe(originalKey);
+    expect(agent.conversationKey).toContain("eval-hermes-newconv");
+
+    // And the next send does not replay the prior turn
+    const baseline = runner.runs.length;
+    await agent.send({ content: "second message" });
+    const sendRun = runner.runs[baseline];
+    expect(sendRun.args).toContain("-z");
+    const prompt = sendRun.args[sendRun.args.length - 1] as string;
+    expect(prompt).not.toContain("first message");
+    expect(prompt).toContain("second message");
+  });
+
+  test("newConversation refuses before hatch", async () => {
+    const agent = new HermesAgent({
+      runner: new FakeRunner(),
+      profile,
+      testId: "timeline-recall",
+      processEnv: {},
+    });
+
+    await expect(agent.newConversation!()).rejects.toThrow(
+      /has not been hatched/,
+    );
+  });
 });

@@ -68,16 +68,19 @@ export interface IngestAskInput {
    */
   questionMessage: string;
   /**
-   * Quiet timeout in milliseconds for the *question* turn's event drain —
-   * how long the stream may go silent (no new events) before the turn is
-   * treated as finished. Defaults to 30s. This is *not* the overall time
-   * limit: a turn that keeps streaming (e.g. long extended-thinking +
-   * on-demand retrieval) runs until the `questionMaxMs` wall-clock cap
-   * below, however many events it emits. The ingest turn uses
-   * `ingestQuietMs` / `ingestMaxMs` instead, because its silence semantics
-   * differ.
+   * @deprecated Use `questionGraceQuietMs` instead. Previously the
+   * quiet timeout for the question turn's event drain; the question turn
+   * now uses `collectUntilTurnComplete` (driven by `message_complete`)
+   * with `questionGraceQuietMs` as the trailing-event grace period.
+   * Retained in the interface for backwards-compatible callers.
    */
   quietMs?: number;
+  /**
+   * Grace period (ms) after `message_complete` to drain trailing events
+   * (usage records, sync notifications) before returning the question-turn
+   * events. Defaults to 5 seconds — these events arrive within 1-2s.
+   */
+  questionGraceQuietMs?: number;
   /**
    * Hard wall-clock cap (ms) for the *question* turn. The turn ends when
    * the stream goes quiet for `quietMs`, the stream closes, or this much
@@ -176,7 +179,13 @@ export interface IngestAskResult {
   ingestSentinelSeen: boolean;
 }
 
-const DEFAULT_QUIET_MS = 30_000;
+/**
+ * Grace period after `message_complete` to capture trailing events
+ * (usage records, sync notifications) before returning the question-turn
+ * events. These events typically arrive within 1-2 seconds; 5s is
+ * generous while avoiding the 30s wasted by the old default.
+ */
+const DEFAULT_QUESTION_GRACE_QUIET_MS = 5_000;
 /**
  * Default hard wall-clock cap for the question turn: 10 minutes. Generous
  * enough for a retrieval-heavy turn (on-demand `file_read`/`grep` over the
@@ -259,7 +268,8 @@ function joinAssistantText(events: readonly AgentEvent[]): string {
 export async function runIngestAsk(
   input: IngestAskInput,
 ): Promise<IngestAskResult> {
-  const quietMs = input.quietMs ?? DEFAULT_QUIET_MS;
+  const questionGraceQuietMs =
+    input.questionGraceQuietMs ?? DEFAULT_QUESTION_GRACE_QUIET_MS;
   const questionMaxMs = input.questionMaxMs ?? DEFAULT_QUESTION_MAX_MS;
   const ingestQuietMs = input.ingestQuietMs ?? DEFAULT_INGEST_QUIET_MS;
   const ingestSentinel = input.ingestSentinel ?? DEFAULT_INGEST_SENTINEL;
@@ -356,6 +366,7 @@ export async function runIngestAsk(
         isDone: (events) => isIngestDone(joinAssistantText(events)),
         maxMs: ingestMaxMs,
         quietMs: ingestQuietMs,
+        graceQuietMs: 5_000,
         onEvent: autoConfirm,
       });
     if (ingestEvents.length === 0) {
@@ -382,9 +393,10 @@ export async function runIngestAsk(
     if (ingestResponseText) {
       // Use the message_complete event timestamp (or the last text
       // delta) as the turn end, NOT the last event in the array.
-      // collectUntilSentinel drains with a 120s quiet window, so
-      // unrelated trailing events (disk_pressure, sync_changed) can
-      // arrive long after the turn finished and inflate the timestamp.
+      // collectUntilSentinel now short-circuits on the sentinel and
+      // drains only 5s of trailing events, but unrelated trailing
+      // events (disk_pressure, sync_changed) can still arrive and
+      // inflate the timestamp.
       const ingestEndStamp = (() => {
         for (let i = ingestEvents.length - 1; i >= 0; i--) {
           const msg = ingestEvents[i].message;
@@ -449,7 +461,7 @@ export async function runIngestAsk(
       await questionCollector.collectUntilTurnComplete({
         isComplete: (event) => agent.isTurnComplete(event),
         maxMs: questionMaxMs,
-        graceQuietMs: quietMs,
+        graceQuietMs: questionGraceQuietMs,
         onEvent: autoConfirm,
       });
     if (questionEvents.length === 0) {

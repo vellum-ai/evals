@@ -180,6 +180,7 @@ function metricFromEvalResult(
       function: evalResult.function,
       ability: item.ability,
       questionId: item.questionId,
+      ...evalResult.metadata,
     },
   };
 }

@@ -268,9 +268,19 @@ describe("HermesAgent", () => {
     await agent.send({ content: "hello hermes" });
     const events = await collector.collectUntilQuiet({ quietMs: 5, maxMs: 50 });
     expect(runner.spawns).toEqual([]);
-    expect(events).toEqual([
-      { message: { type: "message_chunk", chunk: "reply: hello hermes" } },
-    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      message: { type: "message_chunk", chunk: "reply: hello hermes" },
+    });
+    // The turn carries its real wall-clock span (stamped around the exec) so
+    // the transcript view anchors it at completion instead of the simulator
+    // clock. emittedAt is the completion instant; startedAt precedes it.
+    const ev = events[0];
+    expect(typeof ev.emittedAt).toBe("string");
+    expect(ev.endedAt).toBe(ev.emittedAt);
+    expect(Date.parse(ev.startedAt!)).toBeLessThanOrEqual(
+      Date.parse(ev.endedAt!),
+    );
 
     // The send invoked `hermes -z "<prompt>"` as the unprivileged gateway
     // user so memory writes stay gateway-owned, and ran in `/workspace` so
@@ -986,6 +996,26 @@ describe("synthesizeHermesTurnEvent", () => {
   test("still produces an event for an empty answer so the turn isn't read as a dead stream", () => {
     expect(synthesizeHermesTurnEvent("").message.chunk).toBe("");
   });
+
+  test("stamps the real turn span when timing is supplied", () => {
+    const event = synthesizeHermesTurnEvent("done", {
+      startedAt: "2026-06-27T19:57:00.000Z",
+      endedAt: "2026-06-27T20:03:30.000Z",
+    });
+    // emittedAt is the completion instant (so the message anchors at the end
+    // of a multi-minute turn); startedAt/endedAt carry the full span so the
+    // transcript view can render the real duration instead of a zero instant.
+    expect(event.emittedAt).toBe("2026-06-27T20:03:30.000Z");
+    expect(event.startedAt).toBe("2026-06-27T19:57:00.000Z");
+    expect(event.endedAt).toBe("2026-06-27T20:03:30.000Z");
+  });
+
+  test("leaves the event untimed when no timing is supplied", () => {
+    const event = synthesizeHermesTurnEvent("done");
+    expect(event.emittedAt).toBeUndefined();
+    expect(event.startedAt).toBeUndefined();
+    expect(event.endedAt).toBeUndefined();
+  });
 });
 
 describe("HermesAgent single-shot event synthesis", () => {
@@ -1017,9 +1047,10 @@ describe("HermesAgent single-shot event synthesis", () => {
     // event into turn 2. Turn 1 (no prior turns) echoes the raw message;
     // turn 2's prompt threads the conversation so far, so its answer reflects
     // the new message rather than turn 1's standalone event.
-    expect(turn1).toEqual([
-      { message: { type: "message_chunk", chunk: "reply: first" } },
-    ]);
+    expect(turn1).toHaveLength(1);
+    expect(turn1[0]).toMatchObject({
+      message: { type: "message_chunk", chunk: "reply: first" },
+    });
     expect(turn2).toHaveLength(1);
     expect(turn2[0].message.type).toBe("message_chunk");
     expect(turn2[0].message.chunk).toContain("second");

@@ -332,6 +332,12 @@ function shellWords(command: string): string[] {
  */
 export const HERMES_TRANSCRIPT_EVENT_TYPE = "message_chunk";
 
+/** Wall-clock span of a completed `hermes -z` turn, in ISO-8601. */
+export interface HermesTurnTiming {
+  startedAt: string;
+  endedAt: string;
+}
+
 /**
  * Build the single transcript event for a completed `hermes -z` turn. A
  * one-shot prints only the final assistant text, so a turn maps to exactly
@@ -339,15 +345,32 @@ export const HERMES_TRANSCRIPT_EVENT_TYPE = "message_chunk";
  * empty answer) so the runner sees a non-empty event window and doesn't
  * mistake a quiet turn for a dead event pipeline.
  *
+ * When `timing` is supplied (the real turn span measured around the
+ * `docker exec`), the event carries `emittedAt`/`startedAt`/`endedAt` so the
+ * transcript view anchors the assistant message at its true completion time
+ * and shows the turn's real duration. Without it (older callers, unit
+ * tests), the event stays untimed — the transcript view then falls back to
+ * the simulator turn's clock, which is exactly the timing collapse this
+ * argument removes.
+ *
  * Exported for unit tests.
  */
-export function synthesizeHermesTurnEvent(oneshotStdout: string): AgentEvent {
-  return {
+export function synthesizeHermesTurnEvent(
+  oneshotStdout: string,
+  timing?: HermesTurnTiming,
+): AgentEvent {
+  const event: AgentEvent = {
     message: {
       type: HERMES_TRANSCRIPT_EVENT_TYPE,
       chunk: oneshotStdout.replace(/\s+$/, ""),
     },
   };
+  if (timing) {
+    event.emittedAt = timing.endedAt;
+    event.startedAt = timing.startedAt;
+    event.endedAt = timing.endedAt;
+  }
+  return event;
 }
 
 /**
@@ -627,6 +650,11 @@ export class HermesAgent implements BaseAgent {
   async send(message: AgentMessage): Promise<void> {
     this.assertHatched();
     const prompt = buildHermesTurnPrompt(this.liveTurns, message.content);
+    // Bracket the one-shot with wall-clock stamps: the synthesized turn event
+    // has no daemon-supplied timestamp, so without these the transcript view
+    // falls back to the simulator turn's clock and a multi-minute Hermes turn
+    // collapses onto the instant its prompt was sent.
+    const startedAt = new Date().toISOString();
     const result = await this.runner.run(
       "docker",
       [
@@ -647,12 +675,13 @@ export class HermesAgent implements BaseAgent {
         logStep: "send",
       },
     );
+    const endedAt = new Date().toISOString();
     assertSuccess(result, `send message to ${this.id}`);
     const answer = result.stdout ?? "";
     this.liveTurns.push({ role: "user", content: message.content });
     this.liveTurns.push({ role: "assistant", content: answer });
     (this.eventSink ??= new HermesEventQueue()).push(
-      synthesizeHermesTurnEvent(answer),
+      synthesizeHermesTurnEvent(answer, { startedAt, endedAt }),
     );
   }
 

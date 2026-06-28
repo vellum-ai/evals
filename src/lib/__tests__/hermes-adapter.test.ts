@@ -11,8 +11,6 @@ import {
   HERMES_CA_TRUST_ENV_FLAGS,
   HERMES_TRANSCRIPT_EVENT_TYPE,
   selectProviderEnvFlags,
-  selectInferenceSelection,
-  inferenceEnvFlags,
   synthesizeHermesTurnEvent,
   buildHermesTurnPrompt,
 } from "../adapters/hermes";
@@ -893,101 +891,56 @@ describe("HermesAgent", () => {
     );
   });
 
-  test("pins the inference provider + model to the forwarded key's native backend", async () => {
-    // GIVEN a Hermes agent keyed on ANTHROPIC_API_KEY. Hermes's provider
-    // auto-resolution ignores that key and would fall back to openrouter (a
-    // blocked host under the egress jail).
-    const runner = new FakeRunner();
-    const agent = new HermesAgent({
-      runner,
-      profile,
-      testId: "timeline-recall",
-      runId: "eval-hermes-pin",
-      processEnv: { ANTHROPIC_API_KEY: "anthropic-test-value" },
-    });
-
-    // WHEN it hatches.
-    await preStageRecordingCa(agent.id);
-    await agent.hatch();
-
-    // THEN the daemon `docker run` pins provider + model to the native
-    // Anthropic backend (an allowlisted host), so no turn probes openrouter,
-    // and both flags sit before the image so they apply to every `hermes -z`.
-    const dockerRun = hermesDockerRun(runner);
-    const flat = dockerRun.args.join(" ");
-    expect(flat).toContain("HERMES_INFERENCE_PROVIDER=anthropic");
-    expect(flat).toContain("HERMES_INFERENCE_MODEL=claude-sonnet-4-6");
-    const lastInferenceIdx = dockerRun.args.lastIndexOf(
-      "HERMES_INFERENCE_MODEL=claude-sonnet-4-6",
-    );
-    expect(dockerRun.args.indexOf(DERIVED_HERMES_IMAGE)).toBeGreaterThan(
-      lastInferenceIdx,
-    );
-  });
-
-  test("omits the inference pin when no recognized provider key is forwarded", async () => {
-    // GIVEN a Hermes agent with no forwarded provider key.
+  test("never pins an inference provider or model — Hermes runs on its shipped defaults", async () => {
+    // GIVEN a Hermes agent with both a native-backend key and the openrouter
+    // key forwarded. Hermes's auto-resolution ignores ANTHROPIC_API_KEY and
+    // falls through to its openrouter fallback, which is now an allowlisted
+    // host, so there is no reason to force a provider.
     const runner = new FakeRunner();
     const agent = new HermesAgent({
       runner,
       profile,
       testId: "timeline-recall",
       runId: "eval-hermes-no-pin",
-      processEnv: {},
+      processEnv: {
+        ANTHROPIC_API_KEY: "anthropic-test-value",
+        OPENROUTER_API_KEY: "openrouter-test-value",
+      },
     });
 
     // WHEN it hatches.
     await preStageRecordingCa(agent.id);
     await agent.hatch();
 
-    // THEN no HERMES_INFERENCE_* flags are set — Hermes keeps its own
-    // configured defaults rather than being forced onto a provider with no
-    // matching key.
+    // THEN the daemon `docker run` sets no HERMES_INFERENCE_* override — the
+    // agent resolves its own provider + model.
     expect(hermesDockerRun(runner).args.join(" ")).not.toContain(
       "HERMES_INFERENCE_",
     );
   });
 
-  test("selectInferenceSelection picks the first forwarded key in priority order", () => {
-    // Anthropic wins when present, even alongside other keys.
-    expect(
-      selectInferenceSelection({
-        ANTHROPIC_API_KEY: "present",
-        GEMINI_API_KEY: "present",
-      }),
-    ).toEqual({ provider: "anthropic", model: "claude-sonnet-4-6" });
-
-    // Falls through to the next forwarded provider when Anthropic is absent.
-    expect(selectInferenceSelection({ GEMINI_API_KEY: "present" })).toEqual({
-      provider: "gemini",
-      model: "gemini-2.5-pro",
-    });
-    expect(selectInferenceSelection({ GOOGLE_API_KEY: "present" })).toEqual({
-      provider: "gemini",
-      model: "gemini-2.5-pro",
+  test("forwards OPENROUTER_API_KEY so the openrouter fallback can authenticate", async () => {
+    // GIVEN a Hermes agent with OPENROUTER_API_KEY in its env.
+    const runner = new FakeRunner();
+    const agent = new HermesAgent({
+      runner,
+      profile,
+      testId: "timeline-recall",
+      runId: "eval-hermes-openrouter",
+      processEnv: { OPENROUTER_API_KEY: "openrouter-test-value" },
     });
 
-    // OPENAI_API_KEY has no native API-key backend in the pinned Hermes
-    // image (only the OAuth-based openai-codex provider), so it is not
-    // pinnable — selection falls through and Hermes resolves normally.
-    expect(
-      selectInferenceSelection({ OPENAI_API_KEY: "present" }),
-    ).toBeUndefined();
+    // WHEN it hatches.
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
 
-    // No recognized key → undefined (Hermes keeps its defaults).
-    expect(selectInferenceSelection({})).toBeUndefined();
-    expect(selectInferenceSelection({ ANTHROPIC_API_KEY: "" })).toBeUndefined();
-
-    // inferenceEnvFlags renders both flags together, or nothing.
-    expect(
-      inferenceEnvFlags({ provider: "anthropic", model: "claude-sonnet-4-6" }),
-    ).toEqual([
-      "-e",
-      "HERMES_INFERENCE_PROVIDER=anthropic",
-      "-e",
-      "HERMES_INFERENCE_MODEL=claude-sonnet-4-6",
-    ]);
-    expect(inferenceEnvFlags(undefined)).toEqual([]);
+    // THEN the daemon `docker run` forwards the key into the container via
+    // `-e OPENROUTER_API_KEY`, so the openrouter-resolved turns authenticate.
+    const dockerRun = hermesDockerRun(runner);
+    const eFlagValues = dockerRun.args.filter(
+      (_a, i) => dockerRun.args[i - 1] === "-e",
+    );
+    expect(eFlagValues).toContain("OPENROUTER_API_KEY");
   });
 
   test("selectProviderEnvFlags emits -e flags only for present, allow-listed vars", () => {

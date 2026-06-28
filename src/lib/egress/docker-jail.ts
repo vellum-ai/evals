@@ -121,11 +121,19 @@ export async function findOpenHostPort(): Promise<number> {
  * `api.fireworks.ai` serves open-weight models over an OpenAI-compatible
  * API (e.g. MiniMax M3 on US infrastructure for the `vellum-minimax`
  * profile).
+ *
+ * `openrouter.ai` is the aggregator Hermes's provider auto-resolution
+ * falls through to when no native-backend key resolves first. It exposes
+ * an OpenAI-compatible `/api/v1/chat/completions` endpoint, so the
+ * recording addon parses its usage the same way it parses Fireworks. Both
+ * species can reach it (the Vellum adapter already forwards
+ * `OPENROUTER_API_KEY`), so it stays a shared cross-species host.
  */
 export const DEFAULT_MODEL_ALLOW_HOSTS = [
   "api.anthropic.com",
   "api.openai.com",
   "api.fireworks.ai",
+  "openrouter.ai",
   "generativelanguage.googleapis.com",
 ];
 
@@ -162,6 +170,12 @@ export const DEFAULT_INFRA_ALLOW_HOSTS = [
   "staging-platform.vellum.ai",
   "dev-platform.vellum.ai",
   "test-platform.vellum.ai",
+  // Hermes probes the models.dev catalog alongside its openrouter
+  // resolution to discover model metadata. It carries no token usage, so
+  // it is infra rather than a model host; left unparsed by the addon. A
+  // dropped probe hangs the turn on dead TCP until the retry budget
+  // empties, so it must be reachable wherever openrouter.ai is.
+  "models.dev",
 ];
 
 /**

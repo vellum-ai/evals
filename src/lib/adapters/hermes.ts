@@ -116,7 +116,7 @@ import { assertSafeWorkspacePath } from "./workspace-path";
  * We pin to a `:vYYYY.M.D` tag until the evals suite is in a steady state
  * so eval reruns are reproducible. Bump intentionally, not by accident.
  */
-export const DEFAULT_HERMES_IMAGE = "nousresearch/hermes-agent:v2026.5.16";
+export const DEFAULT_HERMES_IMAGE = "nousresearch/hermes-agent:v2026.6.19";
 /**
  * Tag for the locally-built image derived from {@link DEFAULT_HERMES_IMAGE}.
  * The derived image bakes Hermes's lazy-installed provider SDKs (see
@@ -176,6 +176,7 @@ export const HERMES_PROVIDER_ENV_VARS = [
   "OPENAI_API_KEY",
   "GOOGLE_API_KEY",
   "GEMINI_API_KEY",
+  "OPENROUTER_API_KEY",
 ] as const;
 
 export function selectProviderEnvFlags(
@@ -249,82 +250,33 @@ export const HERMES_DISABLE_LAZY_INSTALLS_ENV_FLAGS = [
   "HERMES_DISABLE_LAZY_INSTALLS=1",
 ] as const;
 
-export interface HermesInferenceSelection {
-  provider: string;
-  model: string;
-}
-
 /**
- * Inference provider + model to pin per forwarded provider key.
+ * Inference provider + model resolution.
  *
- * Hermes's provider auto-resolution (`hermes_cli/auth.py::resolve_provider`)
- * does **not** key off `ANTHROPIC_API_KEY`. With only that key present it
- * falls through its priority list to the `"openrouter"` fallback and tries
- * to reach `openrouter.ai` (plus a `models.dev` catalog probe) on every
- * turn. The egress jail allowlists only the native provider hosts in
- * `DEFAULT_MODEL_ALLOW_HOSTS` (api.anthropic.com / api.openai.com /
- * generativelanguage.googleapis.com), so the Cloudflare-fronted openrouter
- * probe is dropped and the turn hangs on dead TCP until it exhausts its
- * retry budget — surfacing as "API call failed after N retries: Request
- * timed out".
+ * hermes-default runs the agent on its own shipped defaults — no
+ * `HERMES_INFERENCE_PROVIDER` / `HERMES_INFERENCE_MODEL` override. Hermes's
+ * provider auto-resolution (`hermes_cli/auth.py::resolve_provider`) walks
+ * its priority list over the forwarded provider keys and, finding no
+ * higher-priority native backend, falls through to its `"openrouter"`
+ * fallback. OpenRouter then serves whatever model Hermes ships as its
+ * default selection.
  *
- * Pinning the provider to the forwarded key's native backend keeps every
- * call on an allowlisted host. Hermes requires a model alongside an explicit
- * provider, so we pin one too; the values are the current flagship for each
- * provider, matching the model the stock Vellum daemon uses, so vellum-default
- * and hermes-default compare on the same model.
+ * This used to be impossible inside the jail: the openrouter fallback hits
+ * `openrouter.ai` (plus a `models.dev` catalog probe) on every turn, and
+ * those hosts were not on the allowlist, so the probe was dropped and the
+ * turn hung on dead TCP until it exhausted its retry budget. We worked
+ * around it by pinning a native provider + flagship model per forwarded
+ * key (notably `anthropic` + `claude-sonnet-4-6`), which kept every call
+ * on an allowlisted host but meant hermes-default was never actually
+ * running on its own defaults.
  *
- * Only keys with a native API-key backend in the pinned image are mapped.
- * `nousresearch/hermes-agent`'s `PROVIDER_REGISTRY` registers `anthropic`
- * (reads `ANTHROPIC_API_KEY`) and `gemini` (reads `GOOGLE_API_KEY` /
- * `GEMINI_API_KEY`), but has **no** plain `openai` provider — its only
- * OpenAI backend is `openai-codex`, an OAuth/ChatGPT-subscription provider
- * that takes no API key. So a forwarded `OPENAI_API_KEY` has nothing to pin
- * to; pinning `HERMES_INFERENCE_PROVIDER=openai` would be rejected as an
- * unknown provider. We omit it and let Hermes resolve normally.
+ * `openrouter.ai` and `models.dev` are now on the egress allowlist (see
+ * `DEFAULT_MODEL_ALLOW_HOSTS` / `DEFAULT_INFRA_ALLOW_HOSTS` in
+ * `docker-jail.ts`) and `OPENROUTER_API_KEY` is forwarded into the
+ * container, so the fallback resolves cleanly and the pin is gone. The
+ * recording addon recognizes `openrouter.ai` as an OpenAI-compatible host,
+ * so usage is still parsed and priced.
  */
-export const HERMES_PROVIDER_INFERENCE: Readonly<
-  Record<string, HermesInferenceSelection>
-> = {
-  ANTHROPIC_API_KEY: { provider: "anthropic", model: "claude-sonnet-4-6" },
-  GOOGLE_API_KEY: { provider: "gemini", model: "gemini-2.5-pro" },
-  GEMINI_API_KEY: { provider: "gemini", model: "gemini-2.5-pro" },
-};
-
-/**
- * Resolve which provider + model to pin from the forwarded provider keys,
- * returning the first match in `names` priority order (mirroring
- * `selectProviderEnvFlags`). Returns `undefined` when no recognized key is
- * set — Hermes then keeps its own configured defaults.
- */
-export function selectInferenceSelection(
-  env: Record<string, string | undefined>,
-  names: ReadonlyArray<string> = HERMES_PROVIDER_ENV_VARS,
-): HermesInferenceSelection | undefined {
-  for (const name of names) {
-    const selection = HERMES_PROVIDER_INFERENCE[name];
-    if (selection && env[name]) return selection;
-  }
-  return undefined;
-}
-
-/**
- * `-e` flags pinning Hermes's inference provider + model on the daemon
- * `docker run` (read by every `hermes -z` turn, which inherits the
- * container env). Both must be set together — Hermes rejects a provider
- * override without an accompanying model.
- */
-export function inferenceEnvFlags(
-  selection: HermesInferenceSelection | undefined,
-): string[] {
-  if (!selection) return [];
-  return [
-    "-e",
-    `HERMES_INFERENCE_PROVIDER=${selection.provider}`,
-    "-e",
-    `HERMES_INFERENCE_MODEL=${selection.model}`,
-  ];
-}
 
 export interface HermesAgentOptions {
   profile: Profile;
@@ -502,7 +454,6 @@ export class HermesAgent implements BaseAgent {
   private readonly derivedImage: string;
   private readonly daemonArgs: ReadonlyArray<string>;
   private readonly providerEnvFlags: string[];
-  private readonly inferenceSelection: HermesInferenceSelection | undefined;
   private readonly testId: string;
   private readonly containerName: string;
   private eventSink?: HermesEventQueue;
@@ -521,10 +472,6 @@ export class HermesAgent implements BaseAgent {
     this.derivedImage = opts.derivedImage ?? DERIVED_HERMES_IMAGE;
     this.daemonArgs = opts.daemonArgs ?? DEFAULT_HERMES_DAEMON_ARGS;
     this.providerEnvFlags = selectProviderEnvFlags(
-      opts.processEnv ?? process.env,
-      opts.providerEnvNames,
-    );
-    this.inferenceSelection = selectInferenceSelection(
       opts.processEnv ?? process.env,
       opts.providerEnvNames,
     );
@@ -600,7 +547,6 @@ export class HermesAgent implements BaseAgent {
           "--label",
           "evals.vellum.ai/species=hermes",
           ...this.providerEnvFlags,
-          ...inferenceEnvFlags(this.inferenceSelection),
           ...HERMES_CA_TRUST_ENV_FLAGS,
           ...HERMES_DISABLE_LAZY_INSTALLS_ENV_FLAGS,
           this.derivedImage,

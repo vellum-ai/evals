@@ -48,8 +48,8 @@ COPY --from=runtime-builder /out/vellum-evals-runtime /usr/local/bin/vellum-eval
 RUN chmod 0755 /usr/local/bin/vellum-evals-runtime
 
 # The runtime defaults to exec'ing real runc at /usr/bin/runc. The dind base may
-# ship runc only at /usr/local/bin/runc; symlink it defensively (start.sh guards
-# this again at runtime).
+# ship runc only at /usr/local/bin/runc; symlink it here at build time (the image
+# filesystem is immutable at runtime, so this is the only place it needs doing).
 RUN if [ ! -e /usr/bin/runc ] && [ -e /usr/local/bin/runc ]; then \
       ln -sf /usr/local/bin/runc /usr/bin/runc; \
     fi

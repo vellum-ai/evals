@@ -10,6 +10,8 @@
 #     registered via daemon.json) that mutates the single opted-in species
 #     container so its egress is recorded — see
 #     docker/eval-pod/vellum-evals-runtime/README.md,
+#   - the `vellum` CLI (from npm, @vellumai/cli@latest) that the Vellum species
+#     adapter shells out to in order to hatch the assistant for vellum-* profiles,
 #   - `start.sh`, which brings dockerd up, provisions the recording CA, and
 #     execs the bundled CLI.
 #
@@ -74,6 +76,30 @@ COPY tsconfig.json ./
 # to be invoked (package.json `bin: { "evals": "./src/cli.ts" }`).
 RUN printf '%s\n' '#!/bin/sh' 'exec bun /app/src/cli.ts "$@"' > /usr/local/bin/evals \
     && chmod +x /usr/local/bin/evals
+
+# The Vellum species adapter (vellum-* profiles, e.g. vellum-default) shells out
+# to a `vellum` binary to hatch the assistant — see src/lib/adapters/vellum.ts.
+# That CLI is NOT part of the evals package, so install it from npm into an
+# isolated prefix (keeping it out of /app's node_modules) and expose it on PATH
+# via a shim mirroring the `evals` one above. The published @vellumai/cli bundles
+# its file: workspace deps (@vellumai/environments, @vellumai/local-mode), so a
+# plain `bun add` is self-contained. The adapter calls `vellum hatch --source
+# <repoRoot>`; that path holds no assistant source tree in this image, so the CLI
+# logs a warning and falls back to pulling the published assistant/gateway/
+# credential-executor images at runtime (no source tree is bundled here).
+#
+# Track the latest published CLI rather than pinning a version: the assistant
+# images hatch pulls are resolved from the latest stable platform release, so the
+# CLI is kept in lock-step by always installing @vellumai/cli@latest. Each image
+# build picks up the newest CLI at build time.
+RUN mkdir -p /opt/vellum-cli \
+    && cd /opt/vellum-cli \
+    && printf '%s\n' '{ "name": "vellum-cli-host", "private": true }' > package.json \
+    && bun add @vellumai/cli@latest \
+    && printf '%s\n' '#!/bin/sh' \
+       'exec bun /opt/vellum-cli/node_modules/@vellumai/cli/src/index.ts "$@"' \
+       > /usr/local/bin/vellum \
+    && chmod +x /usr/local/bin/vellum
 
 # Entrypoint: dockerd bring-up + CA provisioning + exec evals.
 COPY docker/eval-pod/start.sh /usr/local/bin/start.sh

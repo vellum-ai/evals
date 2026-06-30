@@ -10,7 +10,10 @@ CI. A single self-contained pod that bundles, in one image:
 - the `vellum-evals-runtime` named OCI runtime, which mutates the single
   opted-in species container so its egress is recorded — see
   [`vellum-evals-runtime/README.md`](vellum-evals-runtime/README.md) for the
-  runtime / recording-CA contract.
+  runtime / recording-CA contract;
+- the `vellum` CLI (installed from npm, `@vellumai/cli@latest`), which the Vellum
+  species adapter shells out to in order to hatch the assistant for `vellum-*`
+  profiles.
 
 The pod is launched in metered mode by the K8s launcher (ATL-928) and the image
 is built and published in CI (ATL-932). This directory only authors the image.
@@ -54,6 +57,12 @@ docker run --rm --privileged \
 `--profiles` takes committed profile ids (e.g. `vellum-default`,
 `hermes-default`); `--benchmark` takes a committed benchmark id (e.g.
 `personal-intelligence`, `longmemeval-v2`). Omit `--filter` to run every unit.
+
+`vellum-*` profiles hatch the assistant via the bundled `vellum` CLI. The image
+ships no assistant source tree, so `vellum hatch` falls back to pulling the
+published assistant / gateway / credential-executor images at runtime — the pod
+therefore needs registry access for those images (in addition to the model
+egress the harness records).
 
 ## Smoke test without a full run
 

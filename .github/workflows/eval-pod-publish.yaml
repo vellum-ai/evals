@@ -1,0 +1,136 @@
+name: Publish eval-pod image
+
+on:
+  schedule:
+    # Every hour on the hour.
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: eval-pod-publish
+  cancel-in-progress: true
+
+jobs:
+  # ── Skip-if-idle gate ─────────────────────────────────────────────────
+  # The hourly schedule fires regardless of repo activity. Rebuilding an
+  # unchanged main HEAD wastes CI minutes and republishes a byte-identical
+  # image, so cancel the run when nothing has landed since the last
+  # *successful* publish. "Successful" is keyed off the build-and-push job
+  # conclusion of this workflow's prior runs (mirrors dev-release, which keys
+  # off its register-release job). Manual workflow_dispatch always proceeds.
+  check-for-new-commits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      has_new_commits: ${{ steps.check.outputs.has_new_commits }}
+    steps:
+      - name: Check for new commits since last successful publish
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          # Manual dispatches always run, regardless of commit activity.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "Manual dispatch — proceeding regardless of commit activity."
+            echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Walk recent completed runs of THIS workflow newest-first and pick
+          # the first whose build-and-push job succeeded; that run's head SHA
+          # is the last published commit.
+          PREV_SHA=""
+          while read -r rid rsha; do
+            [ -z "$rid" ] && continue
+            CONCL=$(gh api "repos/${REPO}/actions/runs/${rid}/jobs" \
+              --jq '[.jobs[] | select(.name == "build-and-push") | .conclusion] | .[0] // empty')
+            if [ "$CONCL" = "success" ]; then
+              PREV_SHA="$rsha"
+              break
+            fi
+          done < <(gh api \
+            "repos/${REPO}/actions/workflows/eval-pod-publish.yaml/runs?branch=main&status=completed&per_page=30&exclude_pull_requests=true" \
+            --jq ".workflow_runs[] | select(.id != ${RUN_ID}) | \"\(.id) \(.head_sha)\"")
+
+          echo "Last successful publish SHA: ${PREV_SHA:-<none>}"
+          echo "Current SHA: ${HEAD_SHA}"
+
+          if [ -z "$PREV_SHA" ]; then
+            echo "No previous successful publish found — proceeding."
+            echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$PREV_SHA" = "$HEAD_SHA" ]; then
+            echo "No new commits since the last successful publish (${PREV_SHA}) — cancelling run."
+            echo "has_new_commits=false" >> "$GITHUB_OUTPUT"
+            gh run cancel "$RUN_ID" --repo "$REPO" \
+              || echo "::warning::Failed to cancel run ${RUN_ID}; build-and-push is gated on has_new_commits=false and will be skipped anyway."
+            sleep 15
+            exit 0
+          fi
+
+          echo "New commits detected since the last successful publish — proceeding."
+          echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    needs: [check-for-new-commits]
+    if: ${{ needs.check-for-new-commits.outputs.has_new_commits == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Required: the WIF principal is bound to subject
+    # repo:vellum-ai/evals:environment:dev — OIDC is rejected without this.
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/304030683664/locations/global/workloadIdentityPools/github-pool-dev/providers/github-actions-provider-0
+          service_account: gha-evals-image-pusher@vellum-nonprod.iam.gserviceaccount.com
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push eval-pod image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/eval-pod/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: |
+            us-central1-docker.pkg.dev/vellum-nonprod/eval-pod-images/eval-pod:${{ github.sha }}
+            us-central1-docker.pkg.dev/vellum-nonprod/eval-pod-images/eval-pod:latest
+          cache-from: type=gha,scope=eval-pod
+          cache-to: type=gha,mode=max,ignore-error=true,scope=eval-pod
+
+      - name: Summary
+        run: |
+          {
+            echo "## eval-pod image published"
+            echo ""
+            echo "**Repo:** \`us-central1-docker.pkg.dev/vellum-nonprod/eval-pod-images/eval-pod\`"
+            echo "**Tags:** \`${GITHUB_SHA}\`, \`latest\`"
+          } >> "$GITHUB_STEP_SUMMARY"

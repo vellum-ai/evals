@@ -1,0 +1,7 @@
+{
+  "runtimes": {
+    "vellum-evals-runtime": {
+      "path": "/usr/local/bin/vellum-evals-runtime"
+    }
+  }
+}

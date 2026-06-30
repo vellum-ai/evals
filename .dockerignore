@@ -1,0 +1,29 @@
+# Keep the eval-pod build context lean. The context is the repo root; the
+# Dockerfile copies in package.json, bunfig.toml, tsconfig.json, src/,
+# benchmarks/, profiles/, and docker/eval-pod/ — everything else is noise.
+
+.git
+node_modules
+
+# Run artifacts and local output
+.runs
+runs
+results
+
+# Secrets / local config
+.env
+.private
+
+# Agent tooling
+.claude
+.agents
+
+# Python sidecar artifacts
+**/__pycache__
+*.pyc
+
+# Lockfile is gitignored and absent; exact-pinned deps keep installs reproducible
+bun.lock
+
+# The runtime's local build artifact — the image builds the binary itself in CI
+docker/eval-pod/vellum-evals-runtime/vellum-evals-runtime

@@ -47,16 +47,21 @@ jobs:
 
           # Find the last successful publish: its head SHA and when it ran. Walk
           # this workflow's completed main runs newest-first and pick the first
-          # whose build-and-push job succeeded. Use --paginate (not a fixed
-          # per_page window) and break as soon as we find it, so a long run of
-          # idle-skipped runs can never push the last successful build off the
-          # first page and cause a spurious "no previous publish" rebuild.
+          # whose build-and-push job succeeded. Page through all results with
+          # --paginate (instead of capping at a single 30-item page) and break as
+          # soon as we find one, so a long run of idle-skipped runs can never push
+          # the last successful build past the lookup window and cause a spurious
+          # "no previous publish" rebuild.
           PREV_SHA=""
           PREV_TS=""
           while read -r rid rsha rts; do
             [ -z "$rid" ] && continue
+            # Tolerate a transient per-run jobs-API failure (5xx, rate-limit, or a
+            # 404 for a pruned run): `|| true` keeps `set -e` from killing the
+            # whole gate over one bad lookup — CONCL just stays empty and we move
+            # on to the next run rather than dropping this hour's publish.
             CONCL=$(gh api "repos/${REPO}/actions/runs/${rid}/jobs" \
-              --jq '[.jobs[] | select(.name == "build-and-push") | .conclusion] | .[0] // empty')
+              --jq '[.jobs[] | select(.name == "build-and-push") | .conclusion] | .[0] // empty' 2>/dev/null || true)
             if [ "$CONCL" = "success" ]; then
               PREV_SHA="$rsha"
               PREV_TS="$rts"

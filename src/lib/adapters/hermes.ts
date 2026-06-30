@@ -29,6 +29,10 @@ import {
   HERMES_RUNTIME_USER,
   seedHermesSession,
 } from "./hermes-seed";
+import {
+  type HermesSessionMessage,
+  readHermesTurnSession,
+} from "./hermes-session-read";
 import { assertSafeWorkspacePath } from "./workspace-path";
 
 /**
@@ -373,6 +377,185 @@ export function synthesizeHermesTurnEvent(
   return event;
 }
 
+/** Container `messages.timestamp` is float epoch seconds; the transcript
+ * view orders and spans events on ISO stamps. */
+function hermesEpochToIso(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toISOString();
+}
+
+/** An event that occupies a single instant in the turn — its whole span is
+ * the row's write time. */
+function instantEvent(at: string, message: AgentEvent["message"]): AgentEvent {
+  return { emittedAt: at, startedAt: at, endedAt: at, message };
+}
+
+interface ParsedToolCall {
+  toolUseId?: string;
+  toolName: string;
+  input?: Record<string, unknown>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Decode a Hermes assistant step's `tool_calls` column. Each entry is
+ * `{id, call_id, type, function: {name, arguments}}` where `arguments` is
+ * itself a JSON string. Returns `[]` for null/malformed input so a bad row
+ * never throws mid-turn.
+ */
+function parseHermesToolCalls(raw: string | null): ParsedToolCall[] {
+  if (!raw) return [];
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(decoded)) return [];
+  const calls: ParsedToolCall[] = [];
+  for (const entry of decoded) {
+    if (!isRecord(entry)) continue;
+    const fn = isRecord(entry.function) ? entry.function : undefined;
+    const toolName =
+      fn && typeof fn.name === "string" && fn.name.length > 0
+        ? fn.name
+        : "tool";
+    const toolUseId =
+      typeof entry.id === "string"
+        ? entry.id
+        : typeof entry.call_id === "string"
+          ? entry.call_id
+          : undefined;
+    let input: Record<string, unknown> | undefined;
+    const args = fn?.arguments;
+    if (typeof args === "string" && args.length > 0) {
+      try {
+        const parsed: unknown = JSON.parse(args);
+        input = isRecord(parsed) ? parsed : { raw: args };
+      } catch {
+        input = { raw: args };
+      }
+    } else if (isRecord(args)) {
+      input = args;
+    }
+    calls.push({ toolUseId, toolName, input });
+  }
+  return calls;
+}
+
+/**
+ * Classify a `tool` row's result as an error from its JSON body
+ * (`{output, exit_code, error}`): a non-null `error` or a non-zero
+ * `exit_code`. Returns `undefined` when the body isn't decodable so the
+ * block stays neutral rather than falsely flagged.
+ */
+function hermesToolResultIsError(content: string | null): boolean | undefined {
+  if (!content) return undefined;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(decoded)) return undefined;
+  if ("error" in decoded && decoded.error != null) return true;
+  if (typeof decoded.exit_code === "number" && decoded.exit_code !== 0) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Build the full ordered event stream for a completed `hermes -z` turn.
+ *
+ * Without session rows (read failed, or an older artifact) this is exactly
+ * the single terminal `message_chunk` {@link synthesizeHermesTurnEvent}
+ * produces — the judged final answer, unchanged. With session rows it
+ * prepends the turn's intermediate parts in write order so the transcript
+ * view renders them as interleaved blocks:
+ *
+ *  - an assistant step's `reasoning_content` → a `thinking` event;
+ *  - each entry in an assistant step's `tool_calls` → a `tool_use_start`
+ *    event the matching `tool` row then completes;
+ *  - a `tool` row → a `tool_result` event (matched back by `toolUseId`).
+ *
+ * Assistant *text* rows are deliberately not re-emitted: the final answer
+ * already arrives as the terminal `message_chunk` (the exact stdout the
+ * judge scores), and emitting it twice would duplicate the answer block.
+ * Every event carries `emittedAt` (intermediate from its row's write time,
+ * terminal from the turn's end) — the transcript view falls back to flat
+ * text if any event lacks one, so enrichment that dropped a stamp would
+ * silently disable itself.
+ *
+ * The terminal event is always last so `isTurnComplete` (which fires only
+ * on `message_chunk`) doesn't end the turn before the intermediate events
+ * are collected.
+ *
+ * Exported for unit tests.
+ */
+export function synthesizeHermesTurnEvents(
+  oneshotStdout: string,
+  timing: HermesTurnTiming,
+  sessionMessages?: ReadonlyArray<HermesSessionMessage>,
+): AgentEvent[] {
+  const terminal = synthesizeHermesTurnEvent(oneshotStdout, timing);
+  if (!sessionMessages || sessionMessages.length === 0) return [terminal];
+
+  const intermediate: AgentEvent[] = [];
+  let lastIntermediateAt: string | undefined;
+  for (const row of sessionMessages) {
+    if (row.role === "user") continue;
+    const at = hermesEpochToIso(row.timestamp);
+    if (row.role === "assistant") {
+      if (row.reasoningContent && row.reasoningContent.trim().length > 0) {
+        intermediate.push(
+          instantEvent(at, { type: "thinking", thinking: row.reasoningContent }),
+        );
+        lastIntermediateAt = at;
+      }
+      for (const call of parseHermesToolCalls(row.toolCalls)) {
+        intermediate.push(
+          instantEvent(at, {
+            type: "tool_use_start",
+            toolName: call.toolName,
+            toolUseId: call.toolUseId,
+            input: call.input,
+          }),
+        );
+        lastIntermediateAt = at;
+      }
+      continue;
+    }
+    if (row.role === "tool") {
+      intermediate.push(
+        instantEvent(at, {
+          type: "tool_result",
+          toolUseId: row.toolCallId ?? undefined,
+          result: row.content ?? undefined,
+          isError: hermesToolResultIsError(row.content),
+        }),
+      );
+      lastIntermediateAt = at;
+    }
+  }
+
+  if (intermediate.length === 0) return [terminal];
+  // Anchor the final-text block's start at the last intermediate event so
+  // its rendered duration reflects the closing generation, not the whole
+  // turn — the thinking/tool blocks already account for the earlier time.
+  // Guarded so a clock quirk can never produce a start after the end.
+  if (
+    lastIntermediateAt &&
+    terminal.endedAt &&
+    lastIntermediateAt <= terminal.endedAt
+  ) {
+    terminal.startedAt = lastIntermediateAt;
+  }
+  return [...intermediate, terminal];
+}
+
 /**
  * Render the `hermes -z` prompt for a turn, threading prior turns through.
  *
@@ -680,9 +863,23 @@ export class HermesAgent implements BaseAgent {
     const answer = result.stdout ?? "";
     this.liveTurns.push({ role: "user", content: message.content });
     this.liveTurns.push({ role: "assistant", content: answer });
-    (this.eventSink ??= new HermesEventQueue()).push(
-      synthesizeHermesTurnEvent(answer, { startedAt, endedAt }),
-    );
+    // Read back the structured turn parts (reasoning + tool calls/results)
+    // the one-shot wrote to state.db so the transcript shows the agent's
+    // intermediate work, not just its final answer. Best-effort: a failed
+    // read returns undefined and the turn still emits its answer event.
+    const sessionMessages = await readHermesTurnSession({
+      runner: this.runner,
+      containerName: this.containerName,
+      sinceEpoch: Date.parse(startedAt) / 1000,
+    });
+    const sink = (this.eventSink ??= new HermesEventQueue());
+    for (const event of synthesizeHermesTurnEvents(
+      answer,
+      { startedAt, endedAt },
+      sessionMessages,
+    )) {
+      sink.push(event);
+    }
   }
 
   async runSetupCommand(command: TestSetupCommand): Promise<void> {

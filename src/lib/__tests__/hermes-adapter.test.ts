@@ -12,8 +12,13 @@ import {
   HERMES_TRANSCRIPT_EVENT_TYPE,
   selectProviderEnvFlags,
   synthesizeHermesTurnEvent,
+  synthesizeHermesTurnEvents,
   buildHermesTurnPrompt,
 } from "../adapters/hermes";
+import {
+  parseHermesSessionRead,
+  type HermesSessionMessage,
+} from "../adapters/hermes-session-read";
 import { AgentEventCollector } from "../runner/event-collector";
 import {
   HERMES_EVAL_SESSION_SOURCE,
@@ -284,8 +289,13 @@ describe("HermesAgent", () => {
 
     // The send invoked `hermes -z "<prompt>"` as the unprivileged gateway
     // user so memory writes stay gateway-owned, and ran in `/workspace` so
-    // the agent's file tools resolve staged files by bare name.
-    expect(runner.runs.at(-1)).toMatchObject({
+    // the agent's file tools resolve staged files by bare name. (The turn is
+    // followed by a best-effort state.db read-back, so the send is found by
+    // its `-z` flag rather than as the last docker call.)
+    const sendRun = runner.runs.find(
+      (r) => r.command === "docker" && r.args.includes("-z"),
+    );
+    expect(sendRun).toMatchObject({
       command: "docker",
       args: [
         "exec",
@@ -338,7 +348,8 @@ describe("HermesAgent", () => {
       "--port",
       "1234",
     ]);
-    expect(calls.at(-1)).toEqual([
+    const sendCall = calls.find((c) => c[0] === "docker" && c.includes("-z"));
+    expect(sendCall).toEqual([
       "docker",
       "exec",
       "--user",
@@ -610,7 +621,8 @@ describe("HermesAgent", () => {
     // owns the namespace it joined (the owner must outlive its tenants).
     // No event subprocess is spawned to kill.
     const calls = runner.runs.map((r) => [r.command, ...r.args]);
-    expect(calls.at(-4)).toEqual([
+    const sendCall = calls.find((c) => c[0] === "docker" && c.includes("-z"));
+    expect(sendCall).toEqual([
       "docker",
       "exec",
       "--user",
@@ -1015,6 +1027,232 @@ describe("synthesizeHermesTurnEvent", () => {
     expect(event.emittedAt).toBeUndefined();
     expect(event.startedAt).toBeUndefined();
     expect(event.endedAt).toBeUndefined();
+  });
+});
+
+describe("synthesizeHermesTurnEvents", () => {
+  const timing = {
+    startedAt: "2026-06-30T19:17:17.000Z",
+    endedAt: "2026-06-30T19:17:33.000Z",
+  };
+
+  // The validated row sequence a `hermes -z` tool turn persists to state.db:
+  // user prompt → assistant tool-call step → tool result → final answer step.
+  // Both assistant steps carry their own reasoning_content; the tool-call
+  // step has empty content; the final step holds the answer text.
+  const toolCallJson = JSON.stringify([
+    {
+      id: "call-abc",
+      call_id: "call-abc",
+      response_item_id: "fc_call-abc",
+      type: "function",
+      function: {
+        name: "terminal",
+        arguments: JSON.stringify({ command: "echo apollo-probe-42" }),
+      },
+    },
+  ]);
+  const sessionRows: HermesSessionMessage[] = [
+    {
+      role: "user",
+      content: "run echo apollo-probe-42 and report the output",
+      toolCallId: null,
+      toolCalls: null,
+      toolName: null,
+      timestamp: 1782847037.06,
+      finishReason: null,
+      reasoningContent: null,
+    },
+    {
+      role: "assistant",
+      content: "",
+      toolCallId: null,
+      toolCalls: toolCallJson,
+      toolName: null,
+      timestamp: 1782847052.839,
+      finishReason: "tool_calls",
+      reasoningContent: "I should run the echo command via the terminal tool.",
+    },
+    {
+      role: "tool",
+      content: '{"output":"apollo-probe-42","exit_code":0,"error":null}',
+      toolCallId: "call-abc",
+      toolCalls: null,
+      toolName: "terminal",
+      timestamp: 1782847052.844,
+      finishReason: null,
+      reasoningContent: null,
+    },
+    {
+      role: "assistant",
+      content: "apollo-probe-42",
+      toolCallId: null,
+      toolCalls: null,
+      toolName: null,
+      timestamp: 1782847052.847,
+      finishReason: "stop",
+      reasoningContent: "The output was apollo-probe-42; I'll report it.",
+    },
+  ];
+
+  test("falls back to the single terminal event when there are no rows", () => {
+    expect(synthesizeHermesTurnEvents("the answer", timing)).toEqual([
+      synthesizeHermesTurnEvent("the answer", timing),
+    ]);
+    expect(synthesizeHermesTurnEvents("the answer", timing, [])).toEqual([
+      synthesizeHermesTurnEvent("the answer", timing),
+    ]);
+  });
+
+  test("expands a tool turn into ordered thinking/tool/result/answer events", () => {
+    const events = synthesizeHermesTurnEvents(
+      "apollo-probe-42",
+      timing,
+      sessionRows,
+    );
+    // The user row is not re-emitted (the simulator turn already carries it);
+    // both reasoning steps surface, the tool call and its result surface, and
+    // the judged answer is the single terminal message_chunk — never doubled.
+    expect(events.map((e) => e.message.type)).toEqual([
+      "thinking",
+      "tool_use_start",
+      "tool_result",
+      "thinking",
+      "message_chunk",
+    ]);
+  });
+
+  test("every synthesized event carries emittedAt so the view never flattens", () => {
+    const events = synthesizeHermesTurnEvents(
+      "apollo-probe-42",
+      timing,
+      sessionRows,
+    );
+    // buildTranscriptView falls back to flat plain-text if ANY event lacks a
+    // stamp — a dropped emittedAt would silently disable the enrichment.
+    expect(events.every((e) => typeof e.emittedAt === "string")).toBe(true);
+  });
+
+  test("the terminal answer event is always last and the only message_chunk", () => {
+    const events = synthesizeHermesTurnEvents(
+      "apollo-probe-42",
+      timing,
+      sessionRows,
+    );
+    const chunks = events.filter(
+      (e) => e.message.type === HERMES_TRANSCRIPT_EVENT_TYPE,
+    );
+    expect(chunks).toHaveLength(1);
+    expect(events[events.length - 1].message.type).toBe(
+      HERMES_TRANSCRIPT_EVENT_TYPE,
+    );
+    expect(events[events.length - 1].message.chunk).toBe("apollo-probe-42");
+  });
+
+  test("maps the tool call to a tool_use_start with parsed name/id/input", () => {
+    const events = synthesizeHermesTurnEvents("x", timing, sessionRows);
+    const call = events.find((e) => e.message.type === "tool_use_start");
+    expect(call?.message.toolName).toBe("terminal");
+    expect(call?.message.toolUseId).toBe("call-abc");
+    expect(call?.message.input).toEqual({ command: "echo apollo-probe-42" });
+  });
+
+  test("maps the tool row to a tool_result matched back by toolUseId", () => {
+    const events = synthesizeHermesTurnEvents("x", timing, sessionRows);
+    const result = events.find((e) => e.message.type === "tool_result");
+    expect(result?.message.toolUseId).toBe("call-abc");
+    expect(result?.message.result).toBe(
+      '{"output":"apollo-probe-42","exit_code":0,"error":null}',
+    );
+    expect(result?.message.isError).toBe(false);
+  });
+
+  test("flags a tool_result as an error on a non-zero exit code", () => {
+    const rows: HermesSessionMessage[] = [
+      {
+        role: "tool",
+        content: '{"output":"boom","exit_code":1,"error":null}',
+        toolCallId: "call-err",
+        toolCalls: null,
+        toolName: "terminal",
+        timestamp: 1782847052.9,
+        finishReason: null,
+        reasoningContent: null,
+      },
+    ];
+    const events = synthesizeHermesTurnEvents("x", timing, rows);
+    const result = events.find((e) => e.message.type === "tool_result");
+    expect(result?.message.isError).toBe(true);
+  });
+
+  test("anchors the final answer block's start at the last intermediate event", () => {
+    const events = synthesizeHermesTurnEvents("x", timing, sessionRows);
+    const terminal = events[events.length - 1];
+    // The closing reasoning step is the last intermediate event; the answer
+    // block starts there rather than at the turn's start, so its rendered
+    // duration is the closing generation, not the whole turn.
+    expect(terminal.startedAt).toBe(
+      new Date(1782847052.847 * 1000).toISOString(),
+    );
+    expect(terminal.endedAt).toBe(timing.endedAt);
+  });
+});
+
+describe("parseHermesSessionRead", () => {
+  test("parses the read script's JSON line into typed rows", () => {
+    const stdout = JSON.stringify({
+      session_id: "20260630_191716_048b90",
+      messages: [
+        {
+          role: "assistant",
+          content: "",
+          tool_call_id: null,
+          tool_calls: "[]",
+          tool_name: null,
+          timestamp: 1782847052.839,
+          finish_reason: "tool_calls",
+          reasoning_content: "thinking",
+        },
+      ],
+    });
+    expect(parseHermesSessionRead(stdout)).toEqual([
+      {
+        role: "assistant",
+        content: "",
+        toolCallId: null,
+        toolCalls: "[]",
+        toolName: null,
+        timestamp: 1782847052.839,
+        finishReason: "tool_calls",
+        reasoningContent: "thinking",
+      },
+    ]);
+  });
+
+  test("returns undefined for empty or unparseable stdout", () => {
+    expect(parseHermesSessionRead("")).toBeUndefined();
+    expect(parseHermesSessionRead("not json")).toBeUndefined();
+    expect(parseHermesSessionRead("[1,2,3]")).toBeUndefined();
+  });
+
+  test("returns an empty array when the turn produced no session", () => {
+    const stdout = JSON.stringify({ session_id: null, messages: [] });
+    expect(parseHermesSessionRead(stdout)).toEqual([]);
+  });
+
+  test("drops malformed rows without a usable role or timestamp", () => {
+    const stdout = JSON.stringify({
+      session_id: "s",
+      messages: [
+        { role: "user", timestamp: 1 },
+        { role: "assistant" }, // no timestamp → dropped
+        { timestamp: 2 }, // no role → dropped
+        "garbage",
+      ],
+    });
+    const rows = parseHermesSessionRead(stdout);
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0].role).toBe("user");
   });
 });
 

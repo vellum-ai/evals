@@ -13,7 +13,7 @@ Secondary: competitive benchmarking against OpenClaw, Claude Code, Codex, and He
 - OSS-from-day-one. Nothing here stays private.
 - Native TypeScript. No upstream eval framework dependency; borrows Solver/Scorer/Task patterns from inspect-ai.
 - Cost is a first-class scoring axis (tokens + API spend + latency).
-- Local-dev-only sandbox while the harness is young; hosted execution is out of scope for this package.
+- Primarily a local-dev sandbox. Hosted execution is now in scope: the `docker/eval-pod/` image packages the harness to run a benchmark end-to-end inside a privileged container (CI/K8s), but the harness itself stays the same — eval-pod is a delivery wrapper, not a second codepath.
 
 ## Architecture
 
@@ -45,6 +45,8 @@ The jail is **fail-closed** (default DROP; only model + `platform.vellum.ai` hos
 
 **Report card:** JSONL — one row per (profile × test × run). Static HTML report rendered alongside.
 
+**Eval-pod (hosted execution):** `docker/eval-pod/` packages the harness as a privileged Docker-in-Docker image that runs a benchmark end-to-end outside a developer's laptop (a K8s Job launcher invokes it; a CI workflow builds + publishes it). It bundles the `@vellumai/evals` CLI, a nested `dockerd`, and the `vellum-evals-runtime` named OCI runtime, and its `start.sh` brings up the inner dockerd and provisions the recording CA before any tenant is created. It does not change the harness codepath — the same `evals run ...` runs inside the pod as on a laptop. See `docker/eval-pod/README.md` and `docker/eval-pod/vellum-evals-runtime/README.md`.
+
 ## Conventions
 
 - **CLI entry:** `src/cli.ts`. Subcommands live in `src/commands/<name>.ts` and export `register<Name>Command(program)` (commander). New subcommands register themselves on the root program in `cli.ts`.
@@ -61,5 +63,4 @@ The jail is **fail-closed** (default DROP; only model + `platform.vellum.ai` hos
 ## What does NOT belong here
 
 - Vellum runtime code, plugin sources, skill definitions — those live in `assistant/`, `plugins/`, `skills/`.
-- CI infrastructure or release tooling — this is a sandbox-only harness.
-- Anything not directly serving the "run a profile × test combo and emit a report row" mission.
+- Anything not directly serving the "run a profile × test combo and emit a report row" mission. Packaging that mission for hosted execution (the `docker/eval-pod/` image, its launcher/publish wiring) is in scope; CI for the harness's own tests and unrelated release tooling are not.

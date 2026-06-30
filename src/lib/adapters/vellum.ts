@@ -18,6 +18,7 @@ import {
   applyDockerEgressJail,
   findOpenHostPort,
   VELLUM_ALLOW_HOSTS,
+  DEFAULT_PLUGIN_INSTALL_ALLOW_HOSTS,
   type DockerEgressJail,
   vellumDockerAssistantContainer,
   vellumDockerSiblingContainers,
@@ -126,6 +127,16 @@ function repoRootFromAdapter(): string {
 
 function shellWords(command: string): string[] {
   return ["sh", "-lc", command];
+}
+
+/**
+ * Treat an env var as a boolean opt-in flag. Truthy values are `1`, `true`,
+ * and `yes` (case-insensitive); everything else (unset, empty, `0`, `false`)
+ * is off. Used for `EVALS_PLUGIN_INSTALL_LIVE`.
+ */
+function isEnvEnabled(value: string | undefined): boolean {
+  if (!value) return false;
+  return ["1", "true", "yes"].includes(value.trim().toLowerCase());
 }
 
 /**
@@ -314,6 +325,22 @@ export class VellumAgent implements BaseAgent {
       // REDIRECT and generates the interception CA before any assistant
       // process exists, so the daemon is born behind the proxy with no
       // pre-jail window for its first outbound TLS to slip through.
+      // Plugin install source: hermetic mock vs. live public GitHub.
+      //
+      // By default the recording sidecar's mock-github handler serves
+      // `assistant plugins install` from a curated `<repoRoot>/plugins`
+      // fixture tree — deterministic, no GitHub egress. The standalone
+      // eval-pod image ships no such fixture tree (it relies only on
+      // public artifacts), so it opts into LIVE mode via
+      // `EVALS_PLUGIN_INSTALL_LIVE`: the mock is disabled (no
+      // `pluginFixturesDir`) and GitHub's Contents+Raw hosts are
+      // allowlisted so the install fetches the real public plugin at the
+      // marketplace's pinned commit SHA. mitmproxy only intercepts GitHub
+      // when fixtures are mounted, so in live mode it passes GitHub
+      // through and the assistant validates the genuine upstream cert.
+      const livePluginInstall = isEnvEnabled(
+        this.processEnv.EVALS_PLUGIN_INSTALL_LIVE,
+      );
       this.jail = await applyDockerEgressJail(this.runner, {
         runId: this.id,
         recordingDir: runArtifacts(this.id).runDir,
@@ -321,18 +348,26 @@ export class VellumAgent implements BaseAgent {
         // jail additionally allowlists the embedder's npm/HuggingFace
         // download hosts. Hermes never embeds locally and keeps the
         // model-provider-only default, so cross-species cost stays honest.
-        allowHosts: VELLUM_ALLOW_HOSTS,
+        // In live plugin-install mode the public GitHub plugin hosts are
+        // folded in too (passthrough, not recorded — bulk content, not model
+        // traffic).
+        allowHosts: livePluginInstall
+          ? [...VELLUM_ALLOW_HOSTS, ...DEFAULT_PLUGIN_INSTALL_ALLOW_HOSTS]
+          : VELLUM_ALLOW_HOSTS,
         publishPorts: [
           { hostPort: gatewayPort, containerPort: GATEWAY_CONTAINER_PORT },
         ],
-        // Bind-mount the live repo's `plugins/` into the
-        // recording sidecar so the addon's mock-github handler can
-        // serve `assistant plugins install` traffic from disk instead
-        // of letting it egress to github.com. The runner always runs
-        // inside the repo (`repoRootFromAdapter()` drives the hatch
-        // `--source` arg below), so the fixtures path is always
+        // Bind-mount the live repo's `plugins/` into the recording sidecar
+        // so the addon's mock-github handler can serve `assistant plugins
+        // install` traffic from disk instead of letting it egress to
+        // github.com. Omitted in live mode so the install reaches real
+        // public GitHub (see `livePluginInstall` above). Outside live mode
+        // the runner always runs inside the repo (`repoRootFromAdapter()`
+        // drives the hatch `--source` arg below), so the fixtures path is
         // resolvable here.
-        pluginFixturesDir: resolve(repoRootFromAdapter(), "plugins"),
+        pluginFixturesDir: livePluginInstall
+          ? undefined
+          : resolve(repoRootFromAdapter(), "plugins"),
       });
 
       // Forward LLM provider API keys from the eval process env into the

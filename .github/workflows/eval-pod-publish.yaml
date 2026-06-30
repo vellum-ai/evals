@@ -3,7 +3,7 @@ name: Publish eval-pod image
 on:
   schedule:
     # Every hour on the hour.
-    - cron: '0 * * * *'
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -26,6 +26,10 @@ jobs:
       actions: write
     outputs:
       has_new_commits: ${{ steps.check.outputs.has_new_commits }}
+      # "true" only when rebuilding an unchanged main HEAD purely to refresh
+      # floating upstream deps (the daily-refresh path). The build job uses this
+      # to move `latest` WITHOUT republishing the immutable :<sha> tag.
+      refresh_only: ${{ steps.check.outputs.refresh_only }}
     steps:
       - name: Check for new commits since last successful publish
         id: check
@@ -42,6 +46,7 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "Manual dispatch — proceeding regardless of commit activity."
             echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+            echo "refresh_only=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -77,12 +82,14 @@ jobs:
           if [ -z "$PREV_SHA" ]; then
             echo "No previous successful publish found — proceeding."
             echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+            echo "refresh_only=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           if [ "$PREV_SHA" != "$HEAD_SHA" ]; then
             echo "New commits detected since the last successful publish — proceeding."
             echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+            echo "refresh_only=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -104,6 +111,7 @@ jobs:
           if [ "$AGE_HOURS" -ge "$MAX_IMAGE_AGE_HOURS" ]; then
             echo "Unchanged main HEAD, but the last publish is >= ${MAX_IMAGE_AGE_HOURS}h old — forcing a refresh to pick up @vellumai/cli@latest and live plugins."
             echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+            echo "refresh_only=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -149,25 +157,37 @@ jobs:
           IMAGE: us-central1-docker.pkg.dev/vellum-nonprod/eval-pod-images/eval-pod
           REF: ${{ github.ref }}
           SHA: ${{ github.sha }}
+          REFRESH_ONLY: ${{ needs.check-for-new-commits.outputs.refresh_only }}
         run: |
           set -euo pipefail
-          # Always publish the immutable per-commit tag.
-          TAGS="${IMAGE}:${SHA}"
-          # Only move the floating `latest` tag for builds of main HEAD. Scheduled
-          # runs always run on the default branch (main), so the happy path still
-          # gets `latest`; this only prevents a manual workflow_dispatch from a
-          # non-main ref from repointing `latest` at non-main code.
-          if [ "$REF" = "refs/heads/main" ]; then
-            TAGS="${TAGS}"$'\n'"${IMAGE}:latest"
-            echo "latest_pushed=true" >> "$GITHUB_OUTPUT"
+          if [ "$REFRESH_ONLY" = "true" ]; then
+            # Daily refresh of an unchanged main HEAD, rebuilt only to pick up
+            # @vellumai/cli@latest + live plugins. Move `latest`, but do NOT
+            # republish the immutable :<sha> tag — that commit's image is already
+            # published and the per-commit tag must stay put. (This path is only
+            # ever reached on a scheduled main run, so it is always main-ref.)
+            TAGS="${IMAGE}:latest"
+            SUMMARY="\`latest\` (daily refresh — immutable \`${SHA}\` tag left untouched)"
+            echo "::notice::Daily refresh of unchanged ${SHA} — moving 'latest' only; not republishing the immutable per-commit tag."
           else
-            echo "::notice::Non-main ref (${REF}) — publishing only the immutable ${SHA} tag, not moving 'latest'."
-            echo "latest_pushed=false" >> "$GITHUB_OUTPUT"
+            # Content build (new commit, first publish, or manual dispatch).
+            # Always publish the immutable per-commit tag; only move the floating
+            # `latest` for main-ref builds, so a manual workflow_dispatch from a
+            # non-main ref can't repoint `latest` at non-main code.
+            TAGS="${IMAGE}:${SHA}"
+            if [ "$REF" = "refs/heads/main" ]; then
+              TAGS="${TAGS}"$'\n'"${IMAGE}:latest"
+              SUMMARY="\`${SHA}\`, \`latest\`"
+            else
+              SUMMARY="\`${SHA}\` (non-main ref — \`latest\` not moved)"
+              echo "::notice::Non-main ref (${REF}) — publishing only the immutable ${SHA} tag, not moving 'latest'."
+            fi
           fi
           {
             echo "tags<<EOF"
             echo "$TAGS"
             echo "EOF"
+            echo "summary=${SUMMARY}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push eval-pod image
@@ -184,15 +204,11 @@ jobs:
 
       - name: Summary
         env:
-          LATEST_PUSHED: ${{ steps.tags.outputs.latest_pushed }}
+          TAG_SUMMARY: ${{ steps.tags.outputs.summary }}
         run: |
           {
             echo "## eval-pod image published"
             echo ""
             echo "**Repo:** \`us-central1-docker.pkg.dev/vellum-nonprod/eval-pod-images/eval-pod\`"
-            if [ "$LATEST_PUSHED" = "true" ]; then
-              echo "**Tags:** \`${GITHUB_SHA}\`, \`latest\`"
-            else
-              echo "**Tags:** \`${GITHUB_SHA}\` (non-main ref — \`latest\` not moved)"
-            fi
+            echo "**Tags:** ${TAG_SUMMARY}"
           } >> "$GITHUB_STEP_SUMMARY"

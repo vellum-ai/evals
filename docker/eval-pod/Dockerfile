@@ -110,6 +110,16 @@ RUN chmod +x /usr/local/bin/start.sh
 ENV VELLUM_EVALS_RUNTIME_CA_HOST_PATH=/etc/eval-pod/recording-ca.pem
 RUN mkdir -p /etc/eval-pod
 
+# Install plugins (e.g. the vellum-simple-memory profile) directly from their
+# public source repos at the marketplace's pinned commit SHAs, instead of the
+# hermetic mock that serves a curated `plugins/` fixture tree from the assistant
+# repo. This image ships no such fixture tree and relies only on public
+# artifacts, so it opts into live plugin installs; the Vellum adapter then
+# allowlists the public GitHub Contents+Raw hosts in the egress jail (passthrough,
+# not recorded) and skips the mock. The pod therefore needs GitHub reachable at
+# run time for plugin-installing profiles. See src/lib/adapters/vellum.ts.
+ENV EVALS_PLUGIN_INSTALL_LIVE=1
+
 ENTRYPOINT ["/usr/local/bin/start.sh"]
 # A bare `docker run` prints CLI usage; the launcher supplies `run --profiles …`.
 CMD ["--help"]

@@ -165,6 +165,33 @@ export const DEFAULT_INFRA_ALLOW_HOSTS = [
 ];
 
 /**
+ * GitHub hosts the assistant container needs reachable to install plugins
+ * straight from their public source repos at the pinned commit SHAs in
+ * `plugins/marketplace.json` (the `assistant plugins install <name>` flow in
+ * `install-from-github.ts`, which hits the GitHub Contents + Raw APIs).
+ *
+ * These are the **live** counterpart to the hermetic `pluginFixturesDir` mock.
+ * When fixtures are provided the addon synthesizes plugin-install responses
+ * from disk and GitHub is never reached (these hosts stay blocked); when they
+ * are omitted but a plugin profile must still install — e.g. the standalone
+ * eval-pod image, which ships no curated `plugins/` fixture tree and relies only
+ * on public artifacts — these hosts must be allowlisted so the install can fetch
+ * the real public plugin.
+ *
+ * Like `DEFAULT_EMBEDDING_ALLOW_HOSTS`, these are bulk content fetches, **not**
+ * model-inference endpoints, so they are deliberately kept out of the recording
+ * proxy's TLS interception: `RECORDING_TLS_HOSTS_RE` (recording/entrypoint.sh)
+ * only adds GitHub when `PLUGIN_FIXTURES_DIR` is set, so with the mock off
+ * mitmproxy passes GitHub through and the assistant validates the genuine
+ * upstream certificate. Kept out of `DEFAULT_ALLOW_HOSTS` so plugin egress is
+ * opt-in per run, preserving the model-provider-only baseline.
+ */
+export const DEFAULT_PLUGIN_INSTALL_ALLOW_HOSTS = [
+  "api.github.com",
+  "raw.githubusercontent.com",
+];
+
+/**
  * Hosts the Vellum assistant downloads its on-device embedding stack from
  * at daemon startup, when a profile leaves memory on the default local
  * embedder (`Xenova/bge-small-en-v1.5`). The daemon's

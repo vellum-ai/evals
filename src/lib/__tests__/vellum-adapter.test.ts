@@ -7,6 +7,7 @@ import type { AgentEvent } from "../adapter";
 import { VellumAgent, normalizeVellumEventStream } from "../adapters/vellum";
 import {
   DEFAULT_EMBEDDING_ALLOW_HOSTS,
+  DEFAULT_PLUGIN_INSTALL_ALLOW_HOSTS,
   VELLUM_ALLOW_HOSTS,
 } from "../egress/docker-jail";
 import { runArtifacts } from "../metrics";
@@ -250,6 +251,45 @@ describe("VellumAgent", () => {
     expect(events).toEqual([
       { message: { type: "assistant_text_delta", text: "hi" } },
     ]);
+  });
+
+  test("EVALS_PLUGIN_INSTALL_LIVE allowlists public GitHub plugin hosts and disables the fixtures mock", async () => {
+    const runner = new FakeRunner();
+    const agent = new VellumAgent({
+      runner,
+      cliCommand: "vellum",
+      profile,
+      testId: "timeline-recall",
+      runId: "eval-run-live",
+      processEnv: { EVALS_PLUGIN_INSTALL_LIVE: "1" },
+    });
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
+
+    // runs[4] is the jail `docker run` (rm / network rm / build / network
+    // create / run).
+    const jailRun = runner.runs[4];
+    const allowHostsArg = jailRun.args.find((arg) =>
+      arg.startsWith("ALLOW_HOSTS="),
+    );
+    // Live mode folds the public GitHub plugin hosts onto the model +
+    // embedder baseline so `assistant plugins install` can reach them.
+    expect(allowHostsArg).toBe(
+      `ALLOW_HOSTS=${[
+        ...VELLUM_ALLOW_HOSTS,
+        ...DEFAULT_PLUGIN_INSTALL_ALLOW_HOSTS,
+      ].join(",")}`,
+    );
+    for (const host of DEFAULT_PLUGIN_INSTALL_ALLOW_HOSTS) {
+      expect(allowHostsArg).toContain(host);
+    }
+    // The hermetic mock is OFF in live mode: the recording sidecar gets no
+    // fixtures bind-mount and no PLUGIN_FIXTURES_DIR, so GitHub traffic
+    // passes through to the real public repos instead of being synthesized.
+    expect(jailRun.args).not.toContain("PLUGIN_FIXTURES_DIR=/fixtures");
+    expect(jailRun.args.some((arg) => arg.endsWith("/fixtures:ro"))).toBe(
+      false,
+    );
   });
 
   test("applies vellum species default flags via `vellum flags set --assistant <id>` BEFORE setup commands", async () => {

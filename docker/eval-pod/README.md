@@ -64,6 +64,15 @@ published assistant / gateway / credential-executor images at runtime — the po
 therefore needs registry access for those images (in addition to the model
 egress the harness records).
 
+Plugin-installing profiles (e.g. `vellum-simple-memory`) work too: the image
+sets `EVALS_PLUGIN_INSTALL_LIVE=1`, so instead of the hermetic mock that serves a
+curated `plugins/` fixture tree from the assistant repo, the harness installs the
+plugin straight from its public source repo at the marketplace's pinned commit
+SHA. The Vellum adapter allowlists the public GitHub Contents + Raw hosts in the
+egress jail (passthrough — not TLS-intercepted or recorded, since these are bulk
+content fetches, not model traffic), so the pod also needs `api.github.com` and
+`raw.githubusercontent.com` reachable at run time.
+
 ## Smoke test without a full run
 
 To exercise the bundled CLI without bringing up `dockerd` or running a

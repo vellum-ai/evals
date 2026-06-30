@@ -14,13 +14,24 @@
 #      extracting its baked mitmproxy CA. The runtime bind-mounts this file
 #      into the species container's trust store; it must equal the CA
 #      mitmproxy presents, so we extract the exact baked cert.
-#   4. Guarantee a real runc where the runtime defaults to finding it.
-#   5. exec the bundled `evals` CLI with the launcher-supplied subcommand+flags.
+#   4. exec the bundled `evals` CLI with the launcher-supplied subcommand+flags.
+#
+# `-h`/`--help`/no args short-circuit to `evals --help` before any of the above,
+# so a bare `docker run` prints usage without credentials or a running dockerd.
 #
 # Matches the repo's other entrypoints (src/lib/egress/*/entrypoint.sh):
 # `#!/bin/sh`, `set -eu`, `VAR="${VAR:-default}"` defaulting, fail-fast checks.
 
 set -eu
+
+# Help/usage must work without credentials or a running dockerd, so a bare
+# `docker run` (the image's CMD is ["--help"]) or an explicit `-h`/`--help`
+# prints usage and exits without requiring ANTHROPIC_API_KEY or dockerd.
+case "${1:-}" in
+  -h | --help | "")
+    exec evals --help
+    ;;
+esac
 
 # 1. Require the only runtime credential. Fail fast; never echo the value.
 : "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be injected by the launcher}"
@@ -71,18 +82,9 @@ if [ ! -s "$CA_HOST_PATH" ] || ! grep -q "BEGIN CERTIFICATE" "$CA_HOST_PATH"; th
   exit 1
 fi
 
-# 4. Ensure a real runc where the runtime defaults to finding it
-#    (VELLUM_EVALS_RUNTIME_REAL_RUNC=/usr/bin/runc). The dind base may ship runc
-#    only at /usr/local/bin/runc; symlink it so start.sh is self-sufficient.
-if [ ! -e /usr/bin/runc ] && [ -e /usr/local/bin/runc ]; then
-  ln -sf /usr/local/bin/runc /usr/bin/runc
-fi
-
-# 5. Hand off to the bundled CLI. The launcher passes the subcommand + flags as
+# 4. Hand off to the bundled CLI. The launcher passes the subcommand + flags as
 #    container args (e.g. `run --profiles vellum-default --benchmark
 #    personal-intelligence`); don't hardcode `run` so the same entrypoint serves
-#    `benchmarks list`, `export`, etc. With no args, print usage.
-if [ "$#" -eq 0 ]; then
-  exec evals --help
-fi
+#    `benchmarks list`, `export`, etc. The no-args/help case is handled by the
+#    short-circuit at the top, so here we always have a real subcommand.
 exec evals "$@"

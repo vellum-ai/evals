@@ -42,21 +42,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Manual dispatches always run, regardless of commit activity.
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "Manual dispatch — proceeding regardless of commit activity."
-            echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
-            echo "refresh_only=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           # Find the last successful publish: its head SHA and when it ran. Walk
           # this workflow's completed main runs newest-first and pick the first
           # whose build-and-push job succeeded. Page through all results with
           # --paginate (instead of capping at a single 30-item page) and break as
           # soon as we find one, so a long run of idle-skipped runs can never push
           # the last successful build past the lookup window and cause a spurious
-          # "no previous publish" rebuild.
+          # "no previous publish" rebuild. Done for every trigger (including
+          # workflow_dispatch) so we can tell whether THIS commit was already
+          # published and avoid re-stamping its immutable :<sha> tag below.
           PREV_SHA=""
           PREV_TS=""
           while read -r rid rsha rts; do
@@ -77,31 +71,39 @@ jobs:
             --jq ".workflow_runs[] | select(.id != ${RUN_ID}) | \"\(.id) \(.head_sha) \(.run_started_at)\"")
 
           echo "Last successful publish SHA: ${PREV_SHA:-<none>} (run started ${PREV_TS:-<none>})"
-          echo "Current SHA: ${HEAD_SHA}"
+          echo "Current SHA: ${HEAD_SHA} (event: ${EVENT_NAME})"
 
-          if [ -z "$PREV_SHA" ]; then
-            echo "No previous successful publish found — proceeding."
+          # This commit has never been published — build it and stamp its
+          # immutable :<sha> tag (content build, refresh_only=false). Covers the
+          # first-ever run, a new commit on main, and a workflow_dispatch from a
+          # not-yet-published ref.
+          if [ -z "$PREV_SHA" ] || [ "$PREV_SHA" != "$HEAD_SHA" ]; then
+            echo "Commit not yet published — proceeding with a content build."
             echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
             echo "refresh_only=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          if [ "$PREV_SHA" != "$HEAD_SHA" ]; then
-            echo "New commits detected since the last successful publish — proceeding."
+          # This exact commit was already published. Unlike dev-release's images
+          # (pure functions of the repo source), the eval-pod image is NOT
+          # reproducible from the SHA alone: it installs @vellumai/cli@latest at
+          # build time and resolves plugins from upstream live. So a rebuild of an
+          # already-published commit can only *refresh* those floating upstream
+          # artifacts — it must move `latest` but must NOT re-stamp the immutable
+          # :<sha> tag (that commit's pinned image is already published). Any such
+          # rebuild is therefore a refresh_only build.
+          #
+          # - workflow_dispatch: the operator explicitly asked — refresh now.
+          # - scheduled: refresh at most once per MAX_IMAGE_AGE_HOURS so `latest`
+          #   tracks @latest within a day, while still skipping the other ~23 idle
+          #   hourly runs each day.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "Manual dispatch on an already-published commit — refreshing 'latest' (immutable :<sha> left untouched)."
             echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
-            echo "refresh_only=false" >> "$GITHUB_OUTPUT"
+            echo "refresh_only=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Same main HEAD as the last successful publish. Unlike dev-release's
-          # images (pure functions of the repo source), the eval-pod image is
-          # NOT reproducible from the SHA alone: it installs @vellumai/cli@latest
-          # at build time and resolves plugins from upstream live. So a byte-for-
-          # byte identical main HEAD can still produce a *newer* image when those
-          # floating upstream artifacts move. Force a daily refresh: rebuild an
-          # unchanged HEAD once the last successful publish is older than
-          # MAX_IMAGE_AGE_HOURS, so `latest` tracks @latest within a day, while
-          # still skipping the other ~23 idle hourly runs each day.
           MAX_IMAGE_AGE_HOURS=24
           PREV_EPOCH=$(date -u -d "$PREV_TS" +%s)
           NOW_EPOCH=$(date -u +%s)
@@ -199,6 +201,15 @@ jobs:
           push: true
           provenance: false
           tags: ${{ steps.tags.outputs.tags }}
+          # A refresh build exists ONLY to pull newer floating upstream deps
+          # (@vellumai/cli@latest + live plugins). Docker layer caching keys on
+          # the `RUN ... bun add @vellumai/cli@latest` instruction text, not its
+          # resolved result, so reusing the cache would reproduce the byte-
+          # identical image and defeat the refresh. `no-cache` bypasses cache
+          # import on refresh builds (content builds keep cache-from for speed);
+          # cache-to still runs so a refresh repopulates the cache with the newly
+          # resolved layers for the next content build.
+          no-cache: ${{ needs.check-for-new-commits.outputs.refresh_only == 'true' }}
           cache-from: type=gha,scope=eval-pod
           cache-to: type=gha,mode=max,ignore-error=true,scope=eval-pod
 

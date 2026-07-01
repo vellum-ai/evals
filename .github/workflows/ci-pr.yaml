@@ -1,7 +1,9 @@
-name: CI PR Checks
+name: CI Checks
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   pull_request:
     paths:
       - "src/**"

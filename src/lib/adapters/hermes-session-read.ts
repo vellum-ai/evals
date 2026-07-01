@@ -1,8 +1,5 @@
 import { type CommandRunner } from "../runtime/command-runner";
-import {
-  HERMES_RUNTIME_USER,
-  HERMES_STATE_DB_PATH,
-} from "./hermes-seed";
+import { HERMES_RUNTIME_USER, HERMES_STATE_DB_PATH } from "./hermes-seed";
 
 /**
  * Hermes turn read-back — pulls the structured message rows a completed

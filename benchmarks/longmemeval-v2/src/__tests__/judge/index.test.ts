@@ -79,9 +79,7 @@ describe("evalFromSpec dispatcher", () => {
       prediction: "Choice B.",
       answer: "B",
     });
-    expect(result.reason).toBe(
-      'Model selected "B", matching the gold choice.',
-    );
+    expect(result.reason).toBe('Model selected "B", matching the gold choice.');
     expect(result.metadata).toEqual({ extractedChoice: "B", goldChoice: "B" });
   });
 

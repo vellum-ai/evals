@@ -511,7 +511,10 @@ export function synthesizeHermesTurnEvents(
     if (row.role === "assistant") {
       if (row.reasoningContent && row.reasoningContent.trim().length > 0) {
         intermediate.push(
-          instantEvent(at, { type: "thinking", thinking: row.reasoningContent }),
+          instantEvent(at, {
+            type: "thinking",
+            thinking: row.reasoningContent,
+          }),
         );
         lastIntermediateAt = at;
       }

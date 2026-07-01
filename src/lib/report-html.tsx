@@ -312,10 +312,7 @@ function ChunkDuration({ startedAt, endedAt }: BlockTiming) {
   }
   const title = chunkTimingTitle(startedAt, endedAt);
   return (
-    <span
-      className={`chunk-duration${title ? " has-tip" : ""}`}
-      title={title}
-    >
+    <span className={`chunk-duration${title ? " has-tip" : ""}`} title={title}>
       {formatRequestDuration(ms)}
     </span>
   );

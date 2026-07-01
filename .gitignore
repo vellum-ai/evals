@@ -10,3 +10,8 @@ bun.lock
 # Python sidecar artifacts
 __pycache__/
 *.pyc
+
+# agents
+.agents/
+.claude/
+.private/

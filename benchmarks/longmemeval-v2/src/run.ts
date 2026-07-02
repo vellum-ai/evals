@@ -28,6 +28,7 @@ import type {
   BenchmarkRunInput,
   BenchmarkRunResult,
 } from "../../../src/lib/benchmark";
+import { applyUnitLimit } from "../../../src/lib/benchmark";
 import { getBenchmarksDir } from "../../../src/lib/catalog";
 import type { EvalProgressReporter } from "../../../src/lib/runner/progress";
 import { wasErrorReportedToProgress } from "../../../src/lib/runner/run-once";
@@ -85,6 +86,7 @@ export async function run(
     profiles,
     filterIds,
     filterFlag,
+    limit,
     session,
     sessionLabel,
     cliArgv,
@@ -97,10 +99,11 @@ export async function run(
   const tier = resolveTier();
 
   const items = await loadLongMemEvalV2({ dataRoot, tier });
-  const selected =
+  const filtered =
     filterIds.length > 0
       ? items.filter((item) => filterIds.includes(item.questionId))
       : items;
+  const selected = applyUnitLimit(filtered, limit);
   if (selected.length === 0) {
     if (filterFlag !== undefined) {
       throw new Error(

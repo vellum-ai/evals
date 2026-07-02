@@ -72,6 +72,14 @@ export interface BenchmarkRunInput {
    * cases produce different error messages.
    */
   filterFlag: string | undefined;
+  /**
+   * Parsed --limit value; `undefined` when the flag wasn't supplied.
+   * Truncates the selected units to the first N in the benchmark's
+   * natural order, after any --filter selection. Validated by the CLI
+   * to be a positive integer. Apply via {@link applyUnitLimit} so every
+   * benchmark shares the same semantics.
+   */
+  limit: number | undefined;
   /** Session id stamped onto every (profile, unit) execution. */
   session: string;
   /** Optional human-readable label associated with this session. */
@@ -91,6 +99,18 @@ export interface BenchmarkRunInput {
    * ingest→ask flow) ignore it.
    */
   maxTurns: number | undefined;
+}
+
+/**
+ * Truncate a benchmark's selected units to the first `limit` in their
+ * natural order. Shared by every benchmark's `run()` so `--limit N`
+ * means the same thing everywhere: it applies AFTER --filter selection
+ * (and after any default exclusions like experimental units), and a
+ * limit larger than the selection is a no-op rather than an error.
+ */
+export function applyUnitLimit<T>(units: T[], limit: number | undefined): T[] {
+  if (limit === undefined) return units;
+  return units.slice(0, limit);
 }
 
 /** Result of a `benchmark.run()` invocation. */

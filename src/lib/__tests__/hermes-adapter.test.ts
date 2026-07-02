@@ -11,11 +11,14 @@ import {
   HERMES_CA_TRUST_ENV_FLAGS,
   HERMES_TRANSCRIPT_EVENT_TYPE,
   selectProviderEnvFlags,
-  selectInferenceSelection,
-  inferenceEnvFlags,
   synthesizeHermesTurnEvent,
+  synthesizeHermesTurnEvents,
   buildHermesTurnPrompt,
 } from "../adapters/hermes";
+import {
+  parseHermesSessionRead,
+  type HermesSessionMessage,
+} from "../adapters/hermes-session-read";
 import { AgentEventCollector } from "../runner/event-collector";
 import {
   HERMES_EVAL_SESSION_SOURCE,
@@ -270,14 +273,29 @@ describe("HermesAgent", () => {
     await agent.send({ content: "hello hermes" });
     const events = await collector.collectUntilQuiet({ quietMs: 5, maxMs: 50 });
     expect(runner.spawns).toEqual([]);
-    expect(events).toEqual([
-      { message: { type: "message_chunk", chunk: "reply: hello hermes" } },
-    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      message: { type: "message_chunk", chunk: "reply: hello hermes" },
+    });
+    // The turn carries its real wall-clock span (stamped around the exec) so
+    // the transcript view anchors it at completion instead of the simulator
+    // clock. emittedAt is the completion instant; startedAt precedes it.
+    const ev = events[0];
+    expect(typeof ev.emittedAt).toBe("string");
+    expect(ev.endedAt).toBe(ev.emittedAt);
+    expect(Date.parse(ev.startedAt!)).toBeLessThanOrEqual(
+      Date.parse(ev.endedAt!),
+    );
 
     // The send invoked `hermes -z "<prompt>"` as the unprivileged gateway
     // user so memory writes stay gateway-owned, and ran in `/workspace` so
-    // the agent's file tools resolve staged files by bare name.
-    expect(runner.runs.at(-1)).toMatchObject({
+    // the agent's file tools resolve staged files by bare name. (The turn is
+    // followed by a best-effort state.db read-back, so the send is found by
+    // its `-z` flag rather than as the last docker call.)
+    const sendRun = runner.runs.find(
+      (r) => r.command === "docker" && r.args.includes("-z"),
+    );
+    expect(sendRun).toMatchObject({
       command: "docker",
       args: [
         "exec",
@@ -330,7 +348,8 @@ describe("HermesAgent", () => {
       "--port",
       "1234",
     ]);
-    expect(calls.at(-1)).toEqual([
+    const sendCall = calls.find((c) => c[0] === "docker" && c.includes("-z"));
+    expect(sendCall).toEqual([
       "docker",
       "exec",
       "--user",
@@ -602,7 +621,8 @@ describe("HermesAgent", () => {
     // owns the namespace it joined (the owner must outlive its tenants).
     // No event subprocess is spawned to kill.
     const calls = runner.runs.map((r) => [r.command, ...r.args]);
-    expect(calls.at(-4)).toEqual([
+    const sendCall = calls.find((c) => c[0] === "docker" && c.includes("-z"));
+    expect(sendCall).toEqual([
       "docker",
       "exec",
       "--user",
@@ -893,101 +913,56 @@ describe("HermesAgent", () => {
     );
   });
 
-  test("pins the inference provider + model to the forwarded key's native backend", async () => {
-    // GIVEN a Hermes agent keyed on ANTHROPIC_API_KEY. Hermes's provider
-    // auto-resolution ignores that key and would fall back to openrouter (a
-    // blocked host under the egress jail).
-    const runner = new FakeRunner();
-    const agent = new HermesAgent({
-      runner,
-      profile,
-      testId: "timeline-recall",
-      runId: "eval-hermes-pin",
-      processEnv: { ANTHROPIC_API_KEY: "anthropic-test-value" },
-    });
-
-    // WHEN it hatches.
-    await preStageRecordingCa(agent.id);
-    await agent.hatch();
-
-    // THEN the daemon `docker run` pins provider + model to the native
-    // Anthropic backend (an allowlisted host), so no turn probes openrouter,
-    // and both flags sit before the image so they apply to every `hermes -z`.
-    const dockerRun = hermesDockerRun(runner);
-    const flat = dockerRun.args.join(" ");
-    expect(flat).toContain("HERMES_INFERENCE_PROVIDER=anthropic");
-    expect(flat).toContain("HERMES_INFERENCE_MODEL=claude-sonnet-4-6");
-    const lastInferenceIdx = dockerRun.args.lastIndexOf(
-      "HERMES_INFERENCE_MODEL=claude-sonnet-4-6",
-    );
-    expect(dockerRun.args.indexOf(DERIVED_HERMES_IMAGE)).toBeGreaterThan(
-      lastInferenceIdx,
-    );
-  });
-
-  test("omits the inference pin when no recognized provider key is forwarded", async () => {
-    // GIVEN a Hermes agent with no forwarded provider key.
+  test("never pins an inference provider or model — Hermes runs on its shipped defaults", async () => {
+    // GIVEN a Hermes agent with both a native-backend key and the openrouter
+    // key forwarded. Hermes's auto-resolution ignores ANTHROPIC_API_KEY and
+    // falls through to its openrouter fallback, which is now an allowlisted
+    // host, so there is no reason to force a provider.
     const runner = new FakeRunner();
     const agent = new HermesAgent({
       runner,
       profile,
       testId: "timeline-recall",
       runId: "eval-hermes-no-pin",
-      processEnv: {},
+      processEnv: {
+        ANTHROPIC_API_KEY: "anthropic-test-value",
+        OPENROUTER_API_KEY: "openrouter-test-value",
+      },
     });
 
     // WHEN it hatches.
     await preStageRecordingCa(agent.id);
     await agent.hatch();
 
-    // THEN no HERMES_INFERENCE_* flags are set — Hermes keeps its own
-    // configured defaults rather than being forced onto a provider with no
-    // matching key.
+    // THEN the daemon `docker run` sets no HERMES_INFERENCE_* override — the
+    // agent resolves its own provider + model.
     expect(hermesDockerRun(runner).args.join(" ")).not.toContain(
       "HERMES_INFERENCE_",
     );
   });
 
-  test("selectInferenceSelection picks the first forwarded key in priority order", () => {
-    // Anthropic wins when present, even alongside other keys.
-    expect(
-      selectInferenceSelection({
-        ANTHROPIC_API_KEY: "present",
-        GEMINI_API_KEY: "present",
-      }),
-    ).toEqual({ provider: "anthropic", model: "claude-sonnet-4-6" });
-
-    // Falls through to the next forwarded provider when Anthropic is absent.
-    expect(selectInferenceSelection({ GEMINI_API_KEY: "present" })).toEqual({
-      provider: "gemini",
-      model: "gemini-2.5-pro",
-    });
-    expect(selectInferenceSelection({ GOOGLE_API_KEY: "present" })).toEqual({
-      provider: "gemini",
-      model: "gemini-2.5-pro",
+  test("forwards OPENROUTER_API_KEY so the openrouter fallback can authenticate", async () => {
+    // GIVEN a Hermes agent with OPENROUTER_API_KEY in its env.
+    const runner = new FakeRunner();
+    const agent = new HermesAgent({
+      runner,
+      profile,
+      testId: "timeline-recall",
+      runId: "eval-hermes-openrouter",
+      processEnv: { OPENROUTER_API_KEY: "openrouter-test-value" },
     });
 
-    // OPENAI_API_KEY has no native API-key backend in the pinned Hermes
-    // image (only the OAuth-based openai-codex provider), so it is not
-    // pinnable — selection falls through and Hermes resolves normally.
-    expect(
-      selectInferenceSelection({ OPENAI_API_KEY: "present" }),
-    ).toBeUndefined();
+    // WHEN it hatches.
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
 
-    // No recognized key → undefined (Hermes keeps its defaults).
-    expect(selectInferenceSelection({})).toBeUndefined();
-    expect(selectInferenceSelection({ ANTHROPIC_API_KEY: "" })).toBeUndefined();
-
-    // inferenceEnvFlags renders both flags together, or nothing.
-    expect(
-      inferenceEnvFlags({ provider: "anthropic", model: "claude-sonnet-4-6" }),
-    ).toEqual([
-      "-e",
-      "HERMES_INFERENCE_PROVIDER=anthropic",
-      "-e",
-      "HERMES_INFERENCE_MODEL=claude-sonnet-4-6",
-    ]);
-    expect(inferenceEnvFlags(undefined)).toEqual([]);
+    // THEN the daemon `docker run` forwards the key into the container via
+    // `-e OPENROUTER_API_KEY`, so the openrouter-resolved turns authenticate.
+    const dockerRun = hermesDockerRun(runner);
+    const eFlagValues = dockerRun.args.filter(
+      (_a, i) => dockerRun.args[i - 1] === "-e",
+    );
+    expect(eFlagValues).toContain("OPENROUTER_API_KEY");
   });
 
   test("selectProviderEnvFlags emits -e flags only for present, allow-listed vars", () => {
@@ -1033,6 +1008,252 @@ describe("synthesizeHermesTurnEvent", () => {
   test("still produces an event for an empty answer so the turn isn't read as a dead stream", () => {
     expect(synthesizeHermesTurnEvent("").message.chunk).toBe("");
   });
+
+  test("stamps the real turn span when timing is supplied", () => {
+    const event = synthesizeHermesTurnEvent("done", {
+      startedAt: "2026-06-27T19:57:00.000Z",
+      endedAt: "2026-06-27T20:03:30.000Z",
+    });
+    // emittedAt is the completion instant (so the message anchors at the end
+    // of a multi-minute turn); startedAt/endedAt carry the full span so the
+    // transcript view can render the real duration instead of a zero instant.
+    expect(event.emittedAt).toBe("2026-06-27T20:03:30.000Z");
+    expect(event.startedAt).toBe("2026-06-27T19:57:00.000Z");
+    expect(event.endedAt).toBe("2026-06-27T20:03:30.000Z");
+  });
+
+  test("leaves the event untimed when no timing is supplied", () => {
+    const event = synthesizeHermesTurnEvent("done");
+    expect(event.emittedAt).toBeUndefined();
+    expect(event.startedAt).toBeUndefined();
+    expect(event.endedAt).toBeUndefined();
+  });
+});
+
+describe("synthesizeHermesTurnEvents", () => {
+  const timing = {
+    startedAt: "2026-06-30T19:17:17.000Z",
+    endedAt: "2026-06-30T19:17:33.000Z",
+  };
+
+  // The validated row sequence a `hermes -z` tool turn persists to state.db:
+  // user prompt → assistant tool-call step → tool result → final answer step.
+  // Both assistant steps carry their own reasoning_content; the tool-call
+  // step has empty content; the final step holds the answer text.
+  const toolCallJson = JSON.stringify([
+    {
+      id: "call-abc",
+      call_id: "call-abc",
+      response_item_id: "fc_call-abc",
+      type: "function",
+      function: {
+        name: "terminal",
+        arguments: JSON.stringify({ command: "echo apollo-probe-42" }),
+      },
+    },
+  ]);
+  const sessionRows: HermesSessionMessage[] = [
+    {
+      role: "user",
+      content: "run echo apollo-probe-42 and report the output",
+      toolCallId: null,
+      toolCalls: null,
+      toolName: null,
+      timestamp: 1782847037.06,
+      finishReason: null,
+      reasoningContent: null,
+    },
+    {
+      role: "assistant",
+      content: "",
+      toolCallId: null,
+      toolCalls: toolCallJson,
+      toolName: null,
+      timestamp: 1782847052.839,
+      finishReason: "tool_calls",
+      reasoningContent: "I should run the echo command via the terminal tool.",
+    },
+    {
+      role: "tool",
+      content: '{"output":"apollo-probe-42","exit_code":0,"error":null}',
+      toolCallId: "call-abc",
+      toolCalls: null,
+      toolName: "terminal",
+      timestamp: 1782847052.844,
+      finishReason: null,
+      reasoningContent: null,
+    },
+    {
+      role: "assistant",
+      content: "apollo-probe-42",
+      toolCallId: null,
+      toolCalls: null,
+      toolName: null,
+      timestamp: 1782847052.847,
+      finishReason: "stop",
+      reasoningContent: "The output was apollo-probe-42; I'll report it.",
+    },
+  ];
+
+  test("falls back to the single terminal event when there are no rows", () => {
+    expect(synthesizeHermesTurnEvents("the answer", timing)).toEqual([
+      synthesizeHermesTurnEvent("the answer", timing),
+    ]);
+    expect(synthesizeHermesTurnEvents("the answer", timing, [])).toEqual([
+      synthesizeHermesTurnEvent("the answer", timing),
+    ]);
+  });
+
+  test("expands a tool turn into ordered thinking/tool/result/answer events", () => {
+    const events = synthesizeHermesTurnEvents(
+      "apollo-probe-42",
+      timing,
+      sessionRows,
+    );
+    // The user row is not re-emitted (the simulator turn already carries it);
+    // both reasoning steps surface, the tool call and its result surface, and
+    // the judged answer is the single terminal message_chunk — never doubled.
+    expect(events.map((e) => e.message.type)).toEqual([
+      "thinking",
+      "tool_use_start",
+      "tool_result",
+      "thinking",
+      "message_chunk",
+    ]);
+  });
+
+  test("every synthesized event carries emittedAt so the view never flattens", () => {
+    const events = synthesizeHermesTurnEvents(
+      "apollo-probe-42",
+      timing,
+      sessionRows,
+    );
+    // buildTranscriptView falls back to flat plain-text if ANY event lacks a
+    // stamp — a dropped emittedAt would silently disable the enrichment.
+    expect(events.every((e) => typeof e.emittedAt === "string")).toBe(true);
+  });
+
+  test("the terminal answer event is always last and the only message_chunk", () => {
+    const events = synthesizeHermesTurnEvents(
+      "apollo-probe-42",
+      timing,
+      sessionRows,
+    );
+    const chunks = events.filter(
+      (e) => e.message.type === HERMES_TRANSCRIPT_EVENT_TYPE,
+    );
+    expect(chunks).toHaveLength(1);
+    expect(events[events.length - 1].message.type).toBe(
+      HERMES_TRANSCRIPT_EVENT_TYPE,
+    );
+    expect(events[events.length - 1].message.chunk).toBe("apollo-probe-42");
+  });
+
+  test("maps the tool call to a tool_use_start with parsed name/id/input", () => {
+    const events = synthesizeHermesTurnEvents("x", timing, sessionRows);
+    const call = events.find((e) => e.message.type === "tool_use_start");
+    expect(call?.message.toolName).toBe("terminal");
+    expect(call?.message.toolUseId).toBe("call-abc");
+    expect(call?.message.input).toEqual({ command: "echo apollo-probe-42" });
+  });
+
+  test("maps the tool row to a tool_result matched back by toolUseId", () => {
+    const events = synthesizeHermesTurnEvents("x", timing, sessionRows);
+    const result = events.find((e) => e.message.type === "tool_result");
+    expect(result?.message.toolUseId).toBe("call-abc");
+    expect(result?.message.result).toBe(
+      '{"output":"apollo-probe-42","exit_code":0,"error":null}',
+    );
+    expect(result?.message.isError).toBe(false);
+  });
+
+  test("flags a tool_result as an error on a non-zero exit code", () => {
+    const rows: HermesSessionMessage[] = [
+      {
+        role: "tool",
+        content: '{"output":"boom","exit_code":1,"error":null}',
+        toolCallId: "call-err",
+        toolCalls: null,
+        toolName: "terminal",
+        timestamp: 1782847052.9,
+        finishReason: null,
+        reasoningContent: null,
+      },
+    ];
+    const events = synthesizeHermesTurnEvents("x", timing, rows);
+    const result = events.find((e) => e.message.type === "tool_result");
+    expect(result?.message.isError).toBe(true);
+  });
+
+  test("anchors the final answer block's start at the last intermediate event", () => {
+    const events = synthesizeHermesTurnEvents("x", timing, sessionRows);
+    const terminal = events[events.length - 1];
+    // The closing reasoning step is the last intermediate event; the answer
+    // block starts there rather than at the turn's start, so its rendered
+    // duration is the closing generation, not the whole turn.
+    expect(terminal.startedAt).toBe(
+      new Date(1782847052.847 * 1000).toISOString(),
+    );
+    expect(terminal.endedAt).toBe(timing.endedAt);
+  });
+});
+
+describe("parseHermesSessionRead", () => {
+  test("parses the read script's JSON line into typed rows", () => {
+    const stdout = JSON.stringify({
+      session_id: "20260630_191716_048b90",
+      messages: [
+        {
+          role: "assistant",
+          content: "",
+          tool_call_id: null,
+          tool_calls: "[]",
+          tool_name: null,
+          timestamp: 1782847052.839,
+          finish_reason: "tool_calls",
+          reasoning_content: "thinking",
+        },
+      ],
+    });
+    expect(parseHermesSessionRead(stdout)).toEqual([
+      {
+        role: "assistant",
+        content: "",
+        toolCallId: null,
+        toolCalls: "[]",
+        toolName: null,
+        timestamp: 1782847052.839,
+        finishReason: "tool_calls",
+        reasoningContent: "thinking",
+      },
+    ]);
+  });
+
+  test("returns undefined for empty or unparseable stdout", () => {
+    expect(parseHermesSessionRead("")).toBeUndefined();
+    expect(parseHermesSessionRead("not json")).toBeUndefined();
+    expect(parseHermesSessionRead("[1,2,3]")).toBeUndefined();
+  });
+
+  test("returns an empty array when the turn produced no session", () => {
+    const stdout = JSON.stringify({ session_id: null, messages: [] });
+    expect(parseHermesSessionRead(stdout)).toEqual([]);
+  });
+
+  test("drops malformed rows without a usable role or timestamp", () => {
+    const stdout = JSON.stringify({
+      session_id: "s",
+      messages: [
+        { role: "user", timestamp: 1 },
+        { role: "assistant" }, // no timestamp → dropped
+        { timestamp: 2 }, // no role → dropped
+        "garbage",
+      ],
+    });
+    const rows = parseHermesSessionRead(stdout);
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0].role).toBe("user");
+  });
 });
 
 describe("HermesAgent single-shot event synthesis", () => {
@@ -1064,9 +1285,10 @@ describe("HermesAgent single-shot event synthesis", () => {
     // event into turn 2. Turn 1 (no prior turns) echoes the raw message;
     // turn 2's prompt threads the conversation so far, so its answer reflects
     // the new message rather than turn 1's standalone event.
-    expect(turn1).toEqual([
-      { message: { type: "message_chunk", chunk: "reply: first" } },
-    ]);
+    expect(turn1).toHaveLength(1);
+    expect(turn1[0]).toMatchObject({
+      message: { type: "message_chunk", chunk: "reply: first" },
+    });
     expect(turn2).toHaveLength(1);
     expect(turn2[0].message.type).toBe("message_chunk");
     expect(turn2[0].message.chunk).toContain("second");

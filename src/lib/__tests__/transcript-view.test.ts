@@ -47,6 +47,38 @@ describe("buildTranscriptView", () => {
     ]);
   });
 
+  test("GIVEN an event with an explicit span WHEN building THEN the block carries the real start/end, not a single instant", () => {
+    // The one-shot Hermes adapter synthesizes one event for a whole turn and
+    // sets startedAt/endedAt to the wall-clock span around its docker exec.
+    const items = buildTranscriptView(
+      [simTurn("what is the capital of France?", "2026-01-01T00:00:00Z")],
+      [
+        {
+          message: { type: "message_chunk", chunk: "Paris." },
+          emittedAt: "2026-01-01T00:06:30Z",
+          startedAt: "2026-01-01T00:00:01Z",
+          endedAt: "2026-01-01T00:06:30Z",
+        },
+      ],
+    );
+
+    expect(items).toHaveLength(2);
+    expect(items[1]).toEqual({
+      role: "assistant",
+      emittedAt: "2026-01-01T00:06:30Z",
+      endedAt: "2026-01-01T00:06:30Z",
+      conversationKey: undefined,
+      blocks: [
+        {
+          kind: "text",
+          text: "Paris.",
+          startedAt: "2026-01-01T00:00:01Z",
+          endedAt: "2026-01-01T00:06:30Z",
+        },
+      ],
+    });
+  });
+
   test("GIVEN consecutive deltas of one kind WHEN building THEN they coalesce into a single block", () => {
     const items = buildTranscriptView(
       [simTurn("hi", "2026-01-01T00:00:00Z")],

@@ -9,6 +9,16 @@ export interface AgentEvent {
   id?: string;
   assistantId?: string;
   emittedAt?: string;
+  /**
+   * Explicit span for an event that represents a whole interval rather than
+   * an instant. A live daemon streams many fine-grained events whose single
+   * `emittedAt` is span enough, but an adapter that synthesizes one event for
+   * a long-running turn (the one-shot Hermes CLI) sets these so the transcript
+   * view can show the turn's real start/end and duration instead of collapsing
+   * it to a single instant. Both default to `emittedAt` when omitted.
+   */
+  startedAt?: string;
+  endedAt?: string;
   message: {
     type: string;
     text?: string;

@@ -29,6 +29,10 @@ import {
   HERMES_RUNTIME_USER,
   seedHermesSession,
 } from "./hermes-seed";
+import {
+  type HermesSessionMessage,
+  readHermesTurnSession,
+} from "./hermes-session-read";
 import { assertSafeWorkspacePath } from "./workspace-path";
 
 /**
@@ -116,7 +120,7 @@ import { assertSafeWorkspacePath } from "./workspace-path";
  * We pin to a `:vYYYY.M.D` tag until the evals suite is in a steady state
  * so eval reruns are reproducible. Bump intentionally, not by accident.
  */
-export const DEFAULT_HERMES_IMAGE = "nousresearch/hermes-agent:v2026.5.16";
+export const DEFAULT_HERMES_IMAGE = "nousresearch/hermes-agent:v2026.6.19";
 /**
  * Tag for the locally-built image derived from {@link DEFAULT_HERMES_IMAGE}.
  * The derived image bakes Hermes's lazy-installed provider SDKs (see
@@ -176,6 +180,7 @@ export const HERMES_PROVIDER_ENV_VARS = [
   "OPENAI_API_KEY",
   "GOOGLE_API_KEY",
   "GEMINI_API_KEY",
+  "OPENROUTER_API_KEY",
 ] as const;
 
 export function selectProviderEnvFlags(
@@ -249,82 +254,33 @@ export const HERMES_DISABLE_LAZY_INSTALLS_ENV_FLAGS = [
   "HERMES_DISABLE_LAZY_INSTALLS=1",
 ] as const;
 
-export interface HermesInferenceSelection {
-  provider: string;
-  model: string;
-}
-
 /**
- * Inference provider + model to pin per forwarded provider key.
+ * Inference provider + model resolution.
  *
- * Hermes's provider auto-resolution (`hermes_cli/auth.py::resolve_provider`)
- * does **not** key off `ANTHROPIC_API_KEY`. With only that key present it
- * falls through its priority list to the `"openrouter"` fallback and tries
- * to reach `openrouter.ai` (plus a `models.dev` catalog probe) on every
- * turn. The egress jail allowlists only the native provider hosts in
- * `DEFAULT_MODEL_ALLOW_HOSTS` (api.anthropic.com / api.openai.com /
- * generativelanguage.googleapis.com), so the Cloudflare-fronted openrouter
- * probe is dropped and the turn hangs on dead TCP until it exhausts its
- * retry budget — surfacing as "API call failed after N retries: Request
- * timed out".
+ * hermes-default runs the agent on its own shipped defaults — no
+ * `HERMES_INFERENCE_PROVIDER` / `HERMES_INFERENCE_MODEL` override. Hermes's
+ * provider auto-resolution (`hermes_cli/auth.py::resolve_provider`) walks
+ * its priority list over the forwarded provider keys and, finding no
+ * higher-priority native backend, falls through to its `"openrouter"`
+ * fallback. OpenRouter then serves whatever model Hermes ships as its
+ * default selection.
  *
- * Pinning the provider to the forwarded key's native backend keeps every
- * call on an allowlisted host. Hermes requires a model alongside an explicit
- * provider, so we pin one too; the values are the current flagship for each
- * provider, matching the model the stock Vellum daemon uses, so vellum-default
- * and hermes-default compare on the same model.
+ * This used to be impossible inside the jail: the openrouter fallback hits
+ * `openrouter.ai` (plus a `models.dev` catalog probe) on every turn, and
+ * those hosts were not on the allowlist, so the probe was dropped and the
+ * turn hung on dead TCP until it exhausted its retry budget. We worked
+ * around it by pinning a native provider + flagship model per forwarded
+ * key (notably `anthropic` + `claude-sonnet-4-6`), which kept every call
+ * on an allowlisted host but meant hermes-default was never actually
+ * running on its own defaults.
  *
- * Only keys with a native API-key backend in the pinned image are mapped.
- * `nousresearch/hermes-agent`'s `PROVIDER_REGISTRY` registers `anthropic`
- * (reads `ANTHROPIC_API_KEY`) and `gemini` (reads `GOOGLE_API_KEY` /
- * `GEMINI_API_KEY`), but has **no** plain `openai` provider — its only
- * OpenAI backend is `openai-codex`, an OAuth/ChatGPT-subscription provider
- * that takes no API key. So a forwarded `OPENAI_API_KEY` has nothing to pin
- * to; pinning `HERMES_INFERENCE_PROVIDER=openai` would be rejected as an
- * unknown provider. We omit it and let Hermes resolve normally.
+ * `openrouter.ai` and `models.dev` are now on the egress allowlist (see
+ * `DEFAULT_MODEL_ALLOW_HOSTS` / `DEFAULT_INFRA_ALLOW_HOSTS` in
+ * `docker-jail.ts`) and `OPENROUTER_API_KEY` is forwarded into the
+ * container, so the fallback resolves cleanly and the pin is gone. The
+ * recording addon recognizes `openrouter.ai` as an OpenAI-compatible host,
+ * so usage is still parsed and priced.
  */
-export const HERMES_PROVIDER_INFERENCE: Readonly<
-  Record<string, HermesInferenceSelection>
-> = {
-  ANTHROPIC_API_KEY: { provider: "anthropic", model: "claude-sonnet-4-6" },
-  GOOGLE_API_KEY: { provider: "gemini", model: "gemini-2.5-pro" },
-  GEMINI_API_KEY: { provider: "gemini", model: "gemini-2.5-pro" },
-};
-
-/**
- * Resolve which provider + model to pin from the forwarded provider keys,
- * returning the first match in `names` priority order (mirroring
- * `selectProviderEnvFlags`). Returns `undefined` when no recognized key is
- * set — Hermes then keeps its own configured defaults.
- */
-export function selectInferenceSelection(
-  env: Record<string, string | undefined>,
-  names: ReadonlyArray<string> = HERMES_PROVIDER_ENV_VARS,
-): HermesInferenceSelection | undefined {
-  for (const name of names) {
-    const selection = HERMES_PROVIDER_INFERENCE[name];
-    if (selection && env[name]) return selection;
-  }
-  return undefined;
-}
-
-/**
- * `-e` flags pinning Hermes's inference provider + model on the daemon
- * `docker run` (read by every `hermes -z` turn, which inherits the
- * container env). Both must be set together — Hermes rejects a provider
- * override without an accompanying model.
- */
-export function inferenceEnvFlags(
-  selection: HermesInferenceSelection | undefined,
-): string[] {
-  if (!selection) return [];
-  return [
-    "-e",
-    `HERMES_INFERENCE_PROVIDER=${selection.provider}`,
-    "-e",
-    `HERMES_INFERENCE_MODEL=${selection.model}`,
-  ];
-}
 
 export interface HermesAgentOptions {
   profile: Profile;
@@ -380,6 +336,12 @@ function shellWords(command: string): string[] {
  */
 export const HERMES_TRANSCRIPT_EVENT_TYPE = "message_chunk";
 
+/** Wall-clock span of a completed `hermes -z` turn, in ISO-8601. */
+export interface HermesTurnTiming {
+  startedAt: string;
+  endedAt: string;
+}
+
 /**
  * Build the single transcript event for a completed `hermes -z` turn. A
  * one-shot prints only the final assistant text, so a turn maps to exactly
@@ -387,15 +349,214 @@ export const HERMES_TRANSCRIPT_EVENT_TYPE = "message_chunk";
  * empty answer) so the runner sees a non-empty event window and doesn't
  * mistake a quiet turn for a dead event pipeline.
  *
+ * When `timing` is supplied (the real turn span measured around the
+ * `docker exec`), the event carries `emittedAt`/`startedAt`/`endedAt` so the
+ * transcript view anchors the assistant message at its true completion time
+ * and shows the turn's real duration. Without it (older callers, unit
+ * tests), the event stays untimed — the transcript view then falls back to
+ * the simulator turn's clock, which is exactly the timing collapse this
+ * argument removes.
+ *
  * Exported for unit tests.
  */
-export function synthesizeHermesTurnEvent(oneshotStdout: string): AgentEvent {
-  return {
+export function synthesizeHermesTurnEvent(
+  oneshotStdout: string,
+  timing?: HermesTurnTiming,
+): AgentEvent {
+  const event: AgentEvent = {
     message: {
       type: HERMES_TRANSCRIPT_EVENT_TYPE,
       chunk: oneshotStdout.replace(/\s+$/, ""),
     },
   };
+  if (timing) {
+    event.emittedAt = timing.endedAt;
+    event.startedAt = timing.startedAt;
+    event.endedAt = timing.endedAt;
+  }
+  return event;
+}
+
+/** Container `messages.timestamp` is float epoch seconds; the transcript
+ * view orders and spans events on ISO stamps. */
+function hermesEpochToIso(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toISOString();
+}
+
+/** An event that occupies a single instant in the turn — its whole span is
+ * the row's write time. */
+function instantEvent(at: string, message: AgentEvent["message"]): AgentEvent {
+  return { emittedAt: at, startedAt: at, endedAt: at, message };
+}
+
+interface ParsedToolCall {
+  toolUseId?: string;
+  toolName: string;
+  input?: Record<string, unknown>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Decode a Hermes assistant step's `tool_calls` column. Each entry is
+ * `{id, call_id, type, function: {name, arguments}}` where `arguments` is
+ * itself a JSON string. Returns `[]` for null/malformed input so a bad row
+ * never throws mid-turn.
+ */
+function parseHermesToolCalls(raw: string | null): ParsedToolCall[] {
+  if (!raw) return [];
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(decoded)) return [];
+  const calls: ParsedToolCall[] = [];
+  for (const entry of decoded) {
+    if (!isRecord(entry)) continue;
+    const fn = isRecord(entry.function) ? entry.function : undefined;
+    const toolName =
+      fn && typeof fn.name === "string" && fn.name.length > 0
+        ? fn.name
+        : "tool";
+    const toolUseId =
+      typeof entry.id === "string"
+        ? entry.id
+        : typeof entry.call_id === "string"
+          ? entry.call_id
+          : undefined;
+    let input: Record<string, unknown> | undefined;
+    const args = fn?.arguments;
+    if (typeof args === "string" && args.length > 0) {
+      try {
+        const parsed: unknown = JSON.parse(args);
+        input = isRecord(parsed) ? parsed : { raw: args };
+      } catch {
+        input = { raw: args };
+      }
+    } else if (isRecord(args)) {
+      input = args;
+    }
+    calls.push({ toolUseId, toolName, input });
+  }
+  return calls;
+}
+
+/**
+ * Classify a `tool` row's result as an error from its JSON body
+ * (`{output, exit_code, error}`): a non-null `error` or a non-zero
+ * `exit_code`. Returns `undefined` when the body isn't decodable so the
+ * block stays neutral rather than falsely flagged.
+ */
+function hermesToolResultIsError(content: string | null): boolean | undefined {
+  if (!content) return undefined;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(decoded)) return undefined;
+  if ("error" in decoded && decoded.error != null) return true;
+  if (typeof decoded.exit_code === "number" && decoded.exit_code !== 0) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Build the full ordered event stream for a completed `hermes -z` turn.
+ *
+ * Without session rows (read failed, or an older artifact) this is exactly
+ * the single terminal `message_chunk` {@link synthesizeHermesTurnEvent}
+ * produces — the judged final answer, unchanged. With session rows it
+ * prepends the turn's intermediate parts in write order so the transcript
+ * view renders them as interleaved blocks:
+ *
+ *  - an assistant step's `reasoning_content` → a `thinking` event;
+ *  - each entry in an assistant step's `tool_calls` → a `tool_use_start`
+ *    event the matching `tool` row then completes;
+ *  - a `tool` row → a `tool_result` event (matched back by `toolUseId`).
+ *
+ * Assistant *text* rows are deliberately not re-emitted: the final answer
+ * already arrives as the terminal `message_chunk` (the exact stdout the
+ * judge scores), and emitting it twice would duplicate the answer block.
+ * Every event carries `emittedAt` (intermediate from its row's write time,
+ * terminal from the turn's end) — the transcript view falls back to flat
+ * text if any event lacks one, so enrichment that dropped a stamp would
+ * silently disable itself.
+ *
+ * The terminal event is always last so `isTurnComplete` (which fires only
+ * on `message_chunk`) doesn't end the turn before the intermediate events
+ * are collected.
+ *
+ * Exported for unit tests.
+ */
+export function synthesizeHermesTurnEvents(
+  oneshotStdout: string,
+  timing: HermesTurnTiming,
+  sessionMessages?: ReadonlyArray<HermesSessionMessage>,
+): AgentEvent[] {
+  const terminal = synthesizeHermesTurnEvent(oneshotStdout, timing);
+  if (!sessionMessages || sessionMessages.length === 0) return [terminal];
+
+  const intermediate: AgentEvent[] = [];
+  let lastIntermediateAt: string | undefined;
+  for (const row of sessionMessages) {
+    if (row.role === "user") continue;
+    const at = hermesEpochToIso(row.timestamp);
+    if (row.role === "assistant") {
+      if (row.reasoningContent && row.reasoningContent.trim().length > 0) {
+        intermediate.push(
+          instantEvent(at, {
+            type: "thinking",
+            thinking: row.reasoningContent,
+          }),
+        );
+        lastIntermediateAt = at;
+      }
+      for (const call of parseHermesToolCalls(row.toolCalls)) {
+        intermediate.push(
+          instantEvent(at, {
+            type: "tool_use_start",
+            toolName: call.toolName,
+            toolUseId: call.toolUseId,
+            input: call.input,
+          }),
+        );
+        lastIntermediateAt = at;
+      }
+      continue;
+    }
+    if (row.role === "tool") {
+      intermediate.push(
+        instantEvent(at, {
+          type: "tool_result",
+          toolUseId: row.toolCallId ?? undefined,
+          result: row.content ?? undefined,
+          isError: hermesToolResultIsError(row.content),
+        }),
+      );
+      lastIntermediateAt = at;
+    }
+  }
+
+  if (intermediate.length === 0) return [terminal];
+  // Anchor the final-text block's start at the last intermediate event so
+  // its rendered duration reflects the closing generation, not the whole
+  // turn — the thinking/tool blocks already account for the earlier time.
+  // Guarded so a clock quirk can never produce a start after the end.
+  if (
+    lastIntermediateAt &&
+    terminal.endedAt &&
+    lastIntermediateAt <= terminal.endedAt
+  ) {
+    terminal.startedAt = lastIntermediateAt;
+  }
+  return [...intermediate, terminal];
 }
 
 /**
@@ -502,7 +663,6 @@ export class HermesAgent implements BaseAgent {
   private readonly derivedImage: string;
   private readonly daemonArgs: ReadonlyArray<string>;
   private readonly providerEnvFlags: string[];
-  private readonly inferenceSelection: HermesInferenceSelection | undefined;
   private readonly testId: string;
   private readonly containerName: string;
   private eventSink?: HermesEventQueue;
@@ -521,10 +681,6 @@ export class HermesAgent implements BaseAgent {
     this.derivedImage = opts.derivedImage ?? DERIVED_HERMES_IMAGE;
     this.daemonArgs = opts.daemonArgs ?? DEFAULT_HERMES_DAEMON_ARGS;
     this.providerEnvFlags = selectProviderEnvFlags(
-      opts.processEnv ?? process.env,
-      opts.providerEnvNames,
-    );
-    this.inferenceSelection = selectInferenceSelection(
       opts.processEnv ?? process.env,
       opts.providerEnvNames,
     );
@@ -600,7 +756,6 @@ export class HermesAgent implements BaseAgent {
           "--label",
           "evals.vellum.ai/species=hermes",
           ...this.providerEnvFlags,
-          ...inferenceEnvFlags(this.inferenceSelection),
           ...HERMES_CA_TRUST_ENV_FLAGS,
           ...HERMES_DISABLE_LAZY_INSTALLS_ENV_FLAGS,
           this.derivedImage,
@@ -681,6 +836,11 @@ export class HermesAgent implements BaseAgent {
   async send(message: AgentMessage): Promise<void> {
     this.assertHatched();
     const prompt = buildHermesTurnPrompt(this.liveTurns, message.content);
+    // Bracket the one-shot with wall-clock stamps: the synthesized turn event
+    // has no daemon-supplied timestamp, so without these the transcript view
+    // falls back to the simulator turn's clock and a multi-minute Hermes turn
+    // collapses onto the instant its prompt was sent.
+    const startedAt = new Date().toISOString();
     const result = await this.runner.run(
       "docker",
       [
@@ -701,13 +861,28 @@ export class HermesAgent implements BaseAgent {
         logStep: "send",
       },
     );
+    const endedAt = new Date().toISOString();
     assertSuccess(result, `send message to ${this.id}`);
     const answer = result.stdout ?? "";
     this.liveTurns.push({ role: "user", content: message.content });
     this.liveTurns.push({ role: "assistant", content: answer });
-    (this.eventSink ??= new HermesEventQueue()).push(
-      synthesizeHermesTurnEvent(answer),
-    );
+    // Read back the structured turn parts (reasoning + tool calls/results)
+    // the one-shot wrote to state.db so the transcript shows the agent's
+    // intermediate work, not just its final answer. Best-effort: a failed
+    // read returns undefined and the turn still emits its answer event.
+    const sessionMessages = await readHermesTurnSession({
+      runner: this.runner,
+      containerName: this.containerName,
+      sinceEpoch: Date.parse(startedAt) / 1000,
+    });
+    const sink = (this.eventSink ??= new HermesEventQueue());
+    for (const event of synthesizeHermesTurnEvents(
+      answer,
+      { startedAt, endedAt },
+      sessionMessages,
+    )) {
+      sink.push(event);
+    }
   }
 
   async runSetupCommand(command: TestSetupCommand): Promise<void> {

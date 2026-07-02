@@ -249,16 +249,17 @@ describe("docker egress jail", () => {
 
   test("DEFAULT_MODEL_ALLOW_HOSTS stays bounded to recognized model providers", () => {
     // The mitmproxy addon (addon.py) parses usage for the providers it
-    // recognizes (Anthropic, plus OpenAI/Fireworks via the shared
-    // chat-completions parser); Gemini flows through unparsed. Adding a
-    // non-model host here would be dead code in the addon at best, so
-    // new infra hosts belong in DEFAULT_INFRA_ALLOW_HOSTS and bulk asset
+    // recognizes (Anthropic, plus OpenAI-compatible Fireworks/OpenRouter via
+    // the shared chat-completions parser); Gemini flows through unparsed.
+    // Adding a non-model host here would be dead code in the addon at best,
+    // so new infra hosts belong in DEFAULT_INFRA_ALLOW_HOSTS and bulk asset
     // downloads in DEFAULT_EMBEDDING_ALLOW_HOSTS.
     expect([...DEFAULT_MODEL_ALLOW_HOSTS].sort()).toEqual([
       "api.anthropic.com",
       "api.fireworks.ai",
       "api.openai.com",
       "generativelanguage.googleapis.com",
+      "openrouter.ai",
     ]);
   });
 

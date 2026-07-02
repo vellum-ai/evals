@@ -59,6 +59,30 @@ describe("evalFromSpec dispatcher", () => {
     expect(result.function).toBe("mc_choice_match");
   });
 
+  test("mc_choice_match records why it scored 0 (extracted vs gold)", async () => {
+    const result = await evalFromSpec("mc_choice_match", {
+      prediction: "\\boxed{E}",
+      answer: "G",
+    });
+    expect(result.label).toBe(false);
+    expect(result.reason).toBe(
+      'Model selected "E", but the gold choice is "G".',
+    );
+    expect(result.metadata).toEqual({
+      extractedChoice: "E",
+      goldChoice: "G",
+    });
+  });
+
+  test("mc_choice_match records the matching choice on a hit", async () => {
+    const result = await evalFromSpec("mc_choice_match", {
+      prediction: "Choice B.",
+      answer: "B",
+    });
+    expect(result.reason).toBe('Model selected "B", matching the gold choice.');
+    expect(result.metadata).toEqual({ extractedChoice: "B", goldChoice: "B" });
+  });
+
   test("dispatches mc_choice_set_match", async () => {
     const result = await evalFromSpec("mc_choice_set_match", {
       prediction: "Final answer: A and C",
@@ -66,6 +90,21 @@ describe("evalFromSpec dispatcher", () => {
     });
     expect(result.label).toBe(true);
     expect(result.function).toBe("mc_choice_set_match");
+  });
+
+  test("mc_choice_set_match records the picked vs gold sets on a miss", async () => {
+    const result = await evalFromSpec("mc_choice_set_match", {
+      prediction: "A and B",
+      answer: "A, C",
+    });
+    expect(result.label).toBe(false);
+    expect(result.reason).toBe(
+      "Model selected {A, B}, but the gold set is {A, C}.",
+    );
+    expect(result.metadata).toEqual({
+      extractedChoices: "A, B",
+      goldChoices: "A, C",
+    });
   });
 
   test("dispatches llm_abstention_checker through the OpenAI transport", async () => {

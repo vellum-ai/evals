@@ -139,6 +139,48 @@ function formatRecordedAt(value: string | undefined): string {
 }
 
 /**
+ * Render an ISO `recorded_at` as `HH:MM:SS.mmm` UTC. The millisecond
+ * precision matters in a chunk tooltip: tool calls and streamed deltas
+ * often start and finish inside the same wall-clock second, so the compact
+ * `HH:MM:SS` form would show an identical start and end and hide the span.
+ */
+function formatRecordedAtPrecise(value: string | undefined): string {
+  const ms = recordedAtMs(value);
+  if (ms === undefined) return "—";
+  return `${new Date(ms).toISOString().slice(11, 23)}Z`;
+}
+
+/**
+ * A human-readable tooltip describing when a transcript chunk (a streamed
+ * text/thinking run, or a tool call) started, ended, and how long it took.
+ * Returns `undefined` when neither endpoint carries a usable timestamp, so
+ * the caller can withhold the `help` cursor rather than promising a tooltip
+ * the browser has nothing to show — the original behavior (a `?` cursor
+ * over a chunk whose only `title` was an unparseable `started —`) is exactly
+ * what made the tool-call latency badge look broken.
+ */
+function chunkTimingTitle(
+  startedAt: string | undefined,
+  endedAt: string | undefined,
+): string | undefined {
+  const hasStart = recordedAtMs(startedAt) !== undefined;
+  const hasEnd = recordedAtMs(endedAt) !== undefined;
+  if (!hasStart && !hasEnd) return undefined;
+  if (hasStart && hasEnd) {
+    const ms = spanMs(startedAt, endedAt);
+    // A zero or unmeasurable span means start and end coincide (a single
+    // instantaneous event); showing an identical "ended" stamp is noise, so
+    // collapse to the start time alone.
+    if (ms === undefined || ms === 0) {
+      return `Started ${formatRecordedAtPrecise(startedAt)}`;
+    }
+    return `Started ${formatRecordedAtPrecise(startedAt)}, ended ${formatRecordedAtPrecise(endedAt)} (${formatRequestDuration(ms)})`;
+  }
+  if (hasStart) return `Started ${formatRecordedAtPrecise(startedAt)}`;
+  return `Ended ${formatRecordedAtPrecise(endedAt)}`;
+}
+
+/**
  * Render a single request's round-trip latency compactly: `840ms` under a
  * second, one-decimal seconds (`2.3s`) above it. Distinct from
  * `formatDuration` (whole-second run wall-clock) because a per-request figure
@@ -268,11 +310,9 @@ function ChunkDuration({ startedAt, endedAt }: BlockTiming) {
   if (ms === undefined) {
     return null;
   }
+  const title = chunkTimingTitle(startedAt, endedAt);
   return (
-    <span
-      className="chunk-duration"
-      title={`started ${formatRecordedAt(startedAt)}`}
-    >
+    <span className={`chunk-duration${title ? " has-tip" : ""}`} title={title}>
       {formatRequestDuration(ms)}
     </span>
   );
@@ -467,7 +507,8 @@ td .row-link { display: block; }
 .turn-body { white-space: pre-wrap; line-height: 1.5; }
 .turn-body + .turn-body, .turn .block-thinking + .turn-body, .turn .block-tool + .turn-body { margin-top: 10px; }
 .chunk { position: relative; }
-.chunk-duration { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; opacity: 0; transition: opacity .12s ease; cursor: help; }
+.chunk-duration { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; opacity: 0; transition: opacity .12s ease; }
+.chunk-duration.has-tip { cursor: help; }
 .chunk:hover .chunk-duration, details[open].chunk > summary .chunk-duration { opacity: 1; }
 .turn-body.chunk > .chunk-duration { position: absolute; top: 4px; right: 6px; }
 .block-thinking > summary .chunk-duration, .block-tool > summary .chunk-duration { margin-left: auto; }

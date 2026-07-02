@@ -458,10 +458,47 @@ describe("report html", () => {
     // WHEN the execution page renders
     const html = renderReportPage({ kind: "execution", run });
 
-    // THEN the chunk shows its 8.0s run time, with the start time in its title
-    expect(html).toContain('class="chunk-duration"');
+    // THEN the chunk shows its 8.0s run time, with a descriptive start/end/
+    // duration tooltip and the help cursor (has-tip) that the tooltip earns.
+    expect(html).toContain('class="chunk-duration has-tip"');
     expect(html).toContain("8.0s");
-    expect(html).toContain('title="started 12:00:01Z"');
+    expect(html).toContain(
+      'title="Started 12:00:01.000Z, ended 12:00:09.000Z (8.0s)"',
+    );
+  });
+
+  test("tool-call latency badge carries a started/ended/duration tooltip", () => {
+    // GIVEN a tool call that starts and completes 120ms later
+    const run: ReportRunDetail = {
+      ...executionDetail,
+      transcript: [],
+      assistantEvents: [
+        {
+          message: {
+            type: "tool_use_start",
+            toolName: "bash",
+            toolUseId: "tu_1",
+            input: { command: "ls" },
+          },
+          emittedAt: "2026-05-15T12:00:01.000Z",
+        },
+        {
+          message: { type: "tool_result", toolUseId: "tu_1", result: "ok" },
+          emittedAt: "2026-05-15T12:00:01.120Z",
+        },
+      ],
+    };
+
+    // WHEN the execution page renders
+    const html = renderReportPage({ kind: "execution", run });
+
+    // THEN the tool block's latency badge has the help cursor and a tooltip
+    // that spells out when the call started, ended, and how long it took —
+    // not the bare, easily-empty "started" title it shipped with.
+    expect(html).toContain('class="chunk-duration has-tip"');
+    expect(html).toContain(
+      'title="Started 12:00:01.000Z, ended 12:00:01.120Z (120ms)"',
+    );
   });
 
   test("not-found page links back to the index", () => {

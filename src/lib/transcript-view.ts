@@ -90,8 +90,8 @@ export type TranscriptViewItem = SimulatorTurnView | AssistantMessageView;
 function blockForEvent(event: AgentEvent): AssistantBlock | undefined {
   const msg = event.message;
   const timing: BlockTiming = {
-    startedAt: event.emittedAt,
-    endedAt: event.emittedAt,
+    startedAt: event.startedAt ?? event.emittedAt,
+    endedAt: event.endedAt ?? event.emittedAt,
   };
   const text = msg.text ?? msg.chunk;
   if (typeof text === "string" && text.length > 0) {

@@ -17,8 +17,8 @@
  */
 
 import {
-  mcChoiceMatch,
-  mcChoiceSetMatch,
+  mcChoiceMatchDetail,
+  mcChoiceSetMatchDetail,
   normPhraseSetMatch,
   normPhraseSetMatchOrdered,
   type McChoiceMatchOptions,
@@ -68,6 +68,14 @@ export interface EvalResult {
    * the report's "missing" code path is the honest answer there.
    */
   usage?: Record<string, unknown>;
+  /**
+   * Function-specific audit fields the runner folds into the metric's
+   * `metadata` alongside `function`/`ability`/`questionId`. The deterministic
+   * multiple-choice judges populate this with the normalized `extractedChoice`
+   * the model gave and the `goldChoice` it was scored against, so a 0/1 score
+   * is self-explaining in the report without re-running the judge.
+   */
+  metadata?: Record<string, string>;
 }
 
 export async function evalFromSpec(
@@ -99,26 +107,45 @@ export async function evalFromSpec(
         reason: "",
         function: name,
       };
-    case "mc_choice_match":
+    case "mc_choice_match": {
+      const detail = mcChoiceMatchDetail(
+        inputs.prediction,
+        inputs.answer,
+        merged as McChoiceMatchOptions,
+      );
+      const shown = (letter: string) => (letter ? `"${letter}"` : "(none)");
       return {
-        label: mcChoiceMatch(
-          inputs.prediction,
-          inputs.answer,
-          merged as McChoiceMatchOptions,
-        ),
-        reason: "",
+        label: detail.matched,
+        reason: detail.matched
+          ? `Model selected ${shown(detail.extracted)}, matching the gold choice.`
+          : `Model selected ${shown(detail.extracted)}, but the gold choice is ${shown(detail.expected)}.`,
         function: name,
+        metadata: {
+          extractedChoice: detail.extracted || "(none)",
+          goldChoice: detail.expected || "(none)",
+        },
       };
-    case "mc_choice_set_match":
+    }
+    case "mc_choice_set_match": {
+      const detail = mcChoiceSetMatchDetail(
+        inputs.prediction,
+        inputs.answer,
+        merged as McChoiceSetMatchOptions,
+      );
+      const shown = (letters: string[]) =>
+        letters.length ? `{${letters.join(", ")}}` : "(none)";
       return {
-        label: mcChoiceSetMatch(
-          inputs.prediction,
-          inputs.answer,
-          merged as McChoiceSetMatchOptions,
-        ),
-        reason: "",
+        label: detail.matched,
+        reason: detail.matched
+          ? `Model selected ${shown(detail.extracted)}, matching the gold set.`
+          : `Model selected ${shown(detail.extracted)}, but the gold set is ${shown(detail.expected)}.`,
         function: name,
+        metadata: {
+          extractedChoices: detail.extracted.join(", ") || "(none)",
+          goldChoices: detail.expected.join(", ") || "(none)",
+        },
       };
+    }
     case "llm_abstention_checker": {
       const result = await llmAbstentionChecker(
         inputs.prediction,
@@ -150,10 +177,14 @@ export { parseEvalFunctionSpec, parseEvalValue } from "./spec";
 export { normalizePhrase, splitPhrases, DEFAULT_SEPARATORS } from "./normalize";
 export {
   mcChoiceMatch,
+  mcChoiceMatchDetail,
   mcChoiceSetMatch,
+  mcChoiceSetMatchDetail,
   normPhraseSetMatch,
   normPhraseSetMatchOrdered,
   extractMultiSelectLetters,
+  type McChoiceMatchDetail,
+  type McChoiceSetMatchDetail,
 } from "./deterministic";
 export {
   llmAbstentionChecker,

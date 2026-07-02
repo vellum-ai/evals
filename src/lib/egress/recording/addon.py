@@ -104,8 +104,15 @@ PLUGIN_FIXTURES_DIR: Optional[str] = os.environ.get("PLUGIN_FIXTURES_DIR")
 # not read — intercepting it would MITM the traffic yet record nothing.
 # Fireworks serves open-weight models over `/chat/completions`, which the
 # parser handles.
+#
+# OpenRouter aggregates many upstream models behind the same
+# `/api/v1/chat/completions` wire format and returns usage in the OpenAI
+# shape, so the parser reads it directly. The "openrouter" label keys
+# pricing in `src/lib/pricing.ts`, which strips the `<upstream>/` model
+# prefix and bills at the underlying provider's rate.
 OPENAI_COMPATIBLE_HOSTS = {
     "api.fireworks.ai": "fireworks",
+    "openrouter.ai": "openrouter",
 }
 
 # Lock guards the NDJSON file writer — mitmproxy can fire `response`

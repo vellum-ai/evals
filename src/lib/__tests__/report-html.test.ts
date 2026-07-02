@@ -1101,6 +1101,32 @@ describe("report html", () => {
     expect(html).not.toContain("/repo/evals/src/cli.ts");
   });
 
+  test("session page shows total duration and total cost in the heading meta", () => {
+    const html = renderReportPage({
+      kind: "session",
+      session: {
+        ...sessionDetail,
+        totalRuntimeMs: 173_000,
+        totalCostUsd: 1.234,
+      },
+    });
+    expect(html).toContain("total duration 2m 53s");
+    expect(html).toContain("total cost $1.23");
+  });
+
+  test("session page shows em-dashes for totals when runs lack duration/cost", () => {
+    const html = renderReportPage({
+      kind: "session",
+      session: {
+        ...sessionDetail,
+        totalRuntimeMs: undefined,
+        totalCostUsd: undefined,
+      },
+    });
+    expect(html).toContain("total duration —");
+    expect(html).toContain("total cost —");
+  });
+
   test("session page omits the CLI command block for legacy sessions without cliArgv", () => {
     // Legacy runs predate the field; the UI must render nothing rather
     // than a "command unknown" placeholder so old session pages stay
@@ -1153,10 +1179,11 @@ describe("report html", () => {
     );
   });
 
-  test("execution page renders the CLI command block when cliArgv is present", () => {
-    // Same plumbing covers run pages — useful when an operator lands
-    // directly on a per-(profile,test) URL via heartbeat or a shared
-    // link rather than via the session index.
+  test("execution page does NOT render the CLI command block", () => {
+    // The CLI command describes the whole `evals run` invocation, so it
+    // belongs on the session (overall) page only. Repeating it on every
+    // per-(profile,test) page was noise — the argv is still recorded on
+    // the run for the session page to surface.
     const html = renderReportPage({
       kind: "execution",
       run: {
@@ -1169,7 +1196,7 @@ describe("report html", () => {
         ],
       },
     });
-    expect(html).toContain("CLI command");
-    expect(html).toContain("evals run --filter=057a2d4d");
+    expect(html).not.toContain("CLI command");
+    expect(html).not.toContain("evals run --filter=057a2d4d");
   });
 });

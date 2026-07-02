@@ -138,6 +138,64 @@ export const DEFAULT_MODEL_ALLOW_HOSTS = [
 ];
 
 /**
+ * Hosts whose TLS the recording proxy actually intercepts (decrypts) so
+ * the addon can parse usage out of their responses. Must mirror the
+ * addon's parse set — `api.anthropic.com` plus the keys of
+ * `OPENAI_COMPATIBLE_HOSTS` in `recording/addon.py`. Everything else in
+ * the allowlist stays pure-TCP passthrough.
+ *
+ * This list exists because reachability and interception are separate
+ * gates: `DEFAULT_MODEL_ALLOW_HOSTS` feeds the iptables allowlist
+ * (reachable at all), while this list feeds mitmdump's `--allow-hosts`
+ * regex (decrypted + parsed). A host present in the former but missing
+ * here flows through encrypted and produces ZERO usage records with no
+ * warning anywhere — exactly how Hermes's OpenRouter spend went
+ * unmetered for two eval rounds while its runs succeeded.
+ *
+ * Only add hosts that are dialed exclusively by tenants that trust the
+ * recording CA (the assistant via `NODE_EXTRA_CA_CERTS`, Hermes via
+ * `installRecordingCa`) — intercepting a host dialed by a
+ * non-CA-trusting container (gateway, credential-executor) would fail
+ * its TLS handshake closed.
+ */
+export const RECORDED_USAGE_HOSTS = [
+  "api.anthropic.com",
+  "api.fireworks.ai",
+  "openrouter.ai",
+];
+
+/**
+ * GitHub hosts added to the interception regex only when plugin
+ * fixtures are mounted, so the addon's mock-github handler can
+ * synthesize plugin-install responses. Without fixtures they stay in
+ * passthrough and the fetching client validates the genuine upstream
+ * certificate.
+ */
+const PLUGIN_FIXTURE_INTERCEPT_HOSTS = [
+  "api.github.com",
+  "raw.githubusercontent.com",
+];
+
+/**
+ * Build the mitmdump `--allow-hosts` regex for the hosts whose TLS the
+ * recording sidecar intercepts. Anchored to `<host>:443` exactly as
+ * `recording/entrypoint.sh` documents; dots escaped so `openrouter.ai`
+ * can't accidentally match `openrouterXai`.
+ */
+export function recordingTlsHostsRegex(options?: {
+  includePluginFixtureHosts?: boolean;
+}): string {
+  const hosts = [
+    ...RECORDED_USAGE_HOSTS,
+    ...(options?.includePluginFixtureHosts
+      ? PLUGIN_FIXTURE_INTERCEPT_HOSTS
+      : []),
+  ];
+  const escaped = hosts.map((host) => host.replaceAll(".", "\\."));
+  return `^(${escaped.join("|")}):443$`;
+}
+
+/**
  * Non-model hosts the assistant container needs reachable for eval
  * setup to succeed.
  *
@@ -465,6 +523,16 @@ export async function applyDockerEgressJail(
     "evals.vellum.ai/egress-recording=1",
     "-e",
     `ALLOW_HOSTS=${allowHosts.join(",")}`,
+    // Interception regex computed here — the single source of truth —
+    // rather than relying on entrypoint.sh's fallback default. Keeping
+    // the recorded-host set in one exported const prevents the
+    // three-registry drift where a host is reachable (ALLOW_HOSTS) and
+    // parseable (addon.py) but never decrypted, silently recording no
+    // usage.
+    "-e",
+    `RECORDING_TLS_HOSTS_RE=${recordingTlsHostsRegex({
+      includePluginFixtureHosts: config.pluginFixturesDir !== undefined,
+    })}`,
     "-v",
     `${resolve(recordingDir)}:/recording`,
     ...publishArgs,

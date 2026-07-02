@@ -274,6 +274,15 @@ export interface PriceUsageResult {
  *   1. If the record already carries `estimatedCostUsd` / `estimated_cost_usd`,
  *      trust it (the daemon has its own pricing pipeline and we'd rather
  *      report what it computed than re-derive).
+ *   1b. If the provider reported its own billed cost on the usage object
+ *      (`usage.cost` — OpenRouter's usage accounting does this on every
+ *      response), trust that. It's metering ground truth from the party
+ *      that actually bills us, including cache discounts and upstream
+ *      routing differences the local table can't know about. This is
+ *      also the only reliable pricing path for OpenRouter: its echoed
+ *      model ids don't match the local table's key shapes (e.g.
+ *      `anthropic/claude-4.6-opus-20260205` versus the table's
+ *      `claude-opus-4-6`), so table lookup would misfire anyway.
  *   2. Otherwise look up the (provider, model) pair against the local
  *      table and compute `(input/1e6 * inputPer1M) + (output/1e6 * outputPer1M)`.
  *   3. Anything missing yields a diagnostic so the report can explain
@@ -288,6 +297,15 @@ export function priceUsageRecord(
     readNumber(record.estimated_cost_usd);
   if (supplied !== undefined) {
     return { costUsd: supplied };
+  }
+
+  // (1b) Provider-reported billed cost on the raw usage object.
+  const usage = record.usage;
+  if (usage && typeof usage === "object" && !Array.isArray(usage)) {
+    const reported = readNumber((usage as Record<string, unknown>).cost);
+    if (reported !== undefined) {
+      return { costUsd: reported };
+    }
   }
 
   const provider = readProvider(record);

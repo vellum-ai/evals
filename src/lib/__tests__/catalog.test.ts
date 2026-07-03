@@ -53,6 +53,34 @@ describe("eval catalog discovery", () => {
     });
   });
 
+  test("accepts branding on a profile manifest and rejects bad colors", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "evals-profiles-"));
+    process.env.EVALS_PROFILES_DIR = dir;
+
+    await mkdir(join(dir, "branded"), { recursive: true });
+    await writeFile(
+      join(dir, "branded", "manifest.json"),
+      JSON.stringify({
+        species: "hermes",
+        branding: { color: "#C0714F", logo: "<svg></svg>" },
+      }),
+      "utf8",
+    );
+    await expect(loadProfile("branded")).resolves.toMatchObject({
+      manifest: { branding: { color: "#C0714F", logo: "<svg></svg>" } },
+    });
+
+    await mkdir(join(dir, "badcolor"), { recursive: true });
+    await writeFile(
+      join(dir, "badcolor", "manifest.json"),
+      JSON.stringify({ species: "hermes", branding: { color: "red" } }),
+      "utf8",
+    );
+    await expect(loadProfile("badcolor")).rejects.toThrow(
+      /branding\.color must be a 6-digit hex/,
+    );
+  });
+
   test("rejects unsafe catalog ids discovered on disk", async () => {
     const dir = await mkdtemp(join(tmpdir(), "evals-profiles-"));
     process.env.EVALS_PROFILES_DIR = dir;

@@ -465,7 +465,7 @@ h1 { font-size: clamp(34px, 5vw, 64px); line-height: .95; margin: 10px 0; letter
 .score-chart-bar { position: relative; width: 100%; border-radius: 16px 16px 3px 3px; display: flex; align-items: flex-end; justify-content: center; }
 .score-chart-badge { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 48px; height: 48px; border-radius: 50%; background: #fff; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
 .score-chart-logo { display: flex; align-items: center; justify-content: center; }
-.score-chart-logo svg { width: 26px; height: 26px; display: block; }
+.score-chart-logo svg { width: 30px; height: 30px; display: block; }
 .score-chart-monogram { font-size: 20px; font-weight: 900; letter-spacing: -.02em; }
 .score-chart-value { color: #fff; font-size: 19px; font-weight: 800; letter-spacing: -.02em; padding-bottom: 16px; font-variant-numeric: tabular-nums; text-shadow: 0 1px 3px rgba(0,0,0,.3); }
 .score-chart-labels { display: flex; justify-content: center; gap: 26px; padding-left: 62px; height: 86px; }
@@ -958,6 +958,20 @@ export function safeBrandLogo(logo: string | undefined): string | undefined {
 }
 
 /**
+ * Darken a `#RRGGBB` color for the badge logo tint. Bar colors are picked
+ * to read against the dark chart background, which makes them too light
+ * to carry a detailed mark on the white badge — the logo needs an
+ * ink-dark shade of the same hue.
+ */
+export function darkenHex(hex: string, factor = 0.62): string {
+  const channel = (offset: number) =>
+    Math.round(parseInt(hex.slice(offset, offset + 2), 16) * factor)
+      .toString(16)
+      .padStart(2, "0");
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
+}
+
+/**
  * Truncated y-axis domain for the profile score chart, in percent.
  *
  * Session scores cluster tightly (two good profiles may sit within a few
@@ -1033,7 +1047,10 @@ function ProfileScoreChart({
                     background: color,
                   }}
                 >
-                  <span className="score-chart-badge" style={{ color }}>
+                  <span
+                    className="score-chart-badge"
+                    style={{ color: darkenHex(color) }}
+                  >
                     {logo ? (
                       <span
                         className="score-chart-logo"

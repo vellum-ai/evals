@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { formatCliCommand, renderReportPage } from "../report-html";
+import {
+  chartDomain,
+  formatCliCommand,
+  renderReportPage,
+  safeBrandColor,
+  safeBrandLogo,
+} from "../report-html";
 import type {
   ReportProfileInSession,
   ReportRunDetail,
@@ -1198,5 +1204,134 @@ describe("report html", () => {
     });
     expect(html).not.toContain("CLI command");
     expect(html).not.toContain("evals run --filter=057a2d4d");
+  });
+});
+
+describe("profile score chart", () => {
+  const brandLogo =
+    '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M4 4h16v16H4z"/></svg>';
+  const brandedSession: ReportSessionDetail = {
+    ...sessionDetail,
+    profiles: [
+      {
+        profileId: "p1",
+        runCount: 1,
+        completedCount: 1,
+        failedCount: 0,
+        runningCount: 0,
+        scoreTotal: 1,
+        info: {
+          species: "hermes",
+          branding: { color: "#C0714F", logo: brandLogo },
+        },
+      },
+      {
+        profileId: "p2",
+        runCount: 1,
+        completedCount: 1,
+        failedCount: 0,
+        runningCount: 0,
+        scoreTotal: 0.5,
+      },
+    ],
+  };
+
+  test("renders branded bars with logo badges and score values", () => {
+    const html = renderReportPage({ kind: "session", session: brandedSession });
+    expect(html).toContain('class="score-chart"');
+    // Branded profile uses its manifest color and inline SVG logo.
+    expect(html).toContain("background:#C0714F");
+    expect(html).toContain('d="M4 4h16v16H4z"');
+    // Score values render inside the bars as one-decimal percents.
+    expect(html).toContain("100.0");
+    expect(html).toContain("50.0");
+  });
+
+  test("falls back to palette color and monogram without branding", () => {
+    const html = renderReportPage({ kind: "session", session: brandedSession });
+    // p2 has no branding: second bar (sorted by score) takes the second
+    // palette color and a monogram badge of the profile id's first letter.
+    expect(html).toContain("background:#22D3EE");
+    expect(html).toContain('class="score-chart-monogram">P<');
+  });
+
+  test("sorts bars by score descending", () => {
+    const html = renderReportPage({ kind: "session", session: brandedSession });
+    expect(html.indexOf("100.0")).toBeLessThan(html.indexOf("50.0"));
+  });
+
+  test("gridline ticks span a truncated domain", () => {
+    const html = renderReportPage({ kind: "session", session: brandedSession });
+    // Scores 100 and 50 -> domain [40, 100], five ticks stepping by 15.
+    for (const tick of ["100%", "85%", "70%", "55%", "40%"]) {
+      expect(html).toContain(`>${tick}<`);
+    }
+  });
+
+  test("chart is omitted when the session has no profiles", () => {
+    const html = renderReportPage({
+      kind: "session",
+      session: { ...sessionDetail, profiles: [], tests: [] },
+    });
+    // The stylesheet always carries .score-chart rules; assert on the
+    // rendered component root instead.
+    expect(html).not.toContain('class="score-chart"');
+  });
+});
+
+describe("safeBrandColor", () => {
+  test("accepts a 6-digit hex", () => {
+    expect(safeBrandColor("#C0714F")).toBe("#C0714F");
+  });
+
+  test("rejects anything else", () => {
+    expect(safeBrandColor(undefined)).toBeUndefined();
+    expect(safeBrandColor("red")).toBeUndefined();
+    expect(safeBrandColor("#C0F")).toBeUndefined();
+    expect(safeBrandColor("#C0714G")).toBeUndefined();
+    expect(safeBrandColor("#C0714F; color: red")).toBeUndefined();
+  });
+});
+
+describe("safeBrandLogo", () => {
+  test("accepts a plain inline svg", () => {
+    const svg = '<svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z"/></svg>';
+    expect(safeBrandLogo(svg)).toBe(svg);
+  });
+
+  test("rejects non-svg and script-bearing markup", () => {
+    expect(safeBrandLogo(undefined)).toBeUndefined();
+    expect(safeBrandLogo("<div>hi</div>")).toBeUndefined();
+    expect(
+      safeBrandLogo("<svg><script>alert(1)</script></svg>"),
+    ).toBeUndefined();
+    expect(
+      safeBrandLogo('<svg onload="alert(1)"><path d="M0 0"/></svg>'),
+    ).toBeUndefined();
+    expect(
+      safeBrandLogo('<svg><a href="javascript:alert(1)">x</a></svg>'),
+    ).toBeUndefined();
+    expect(
+      safeBrandLogo('<svg><path d="M0 0"/></svg> trailing'),
+    ).toBeUndefined();
+  });
+});
+
+describe("chartDomain", () => {
+  test("truncates around clustered scores on 5-point steps", () => {
+    expect(chartDomain([94.3, 96.2, 95.4])).toEqual({ lo: 85, hi: 100 });
+  });
+
+  test("keeps a minimum 10-point span", () => {
+    expect(chartDomain([100, 100])).toEqual({ lo: 90, hi: 100 });
+  });
+
+  test("clamps to the 0-100 range", () => {
+    expect(chartDomain([0])).toEqual({ lo: 0, hi: 5 });
+    expect(chartDomain([99.9])).toEqual({ lo: 90, hi: 100 });
+  });
+
+  test("spreads a mid-range single score", () => {
+    expect(chartDomain([50])).toEqual({ lo: 40, hi: 55 });
   });
 });

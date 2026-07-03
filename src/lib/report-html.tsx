@@ -455,6 +455,35 @@ h1 { font-size: clamp(34px, 5vw, 64px); line-height: .95; margin: 10px 0; letter
 .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
 .usage-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .profile-cards { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.score-chart { margin: 6px 0 26px; padding: 26px 26px 10px; border-radius: 22px; background: rgba(0,0,0,.28); border: 1px solid var(--border); }
+.score-chart-plot { position: relative; height: 340px; padding-left: 62px; }
+.score-chart-grid { position: absolute; inset: 0 0 0 62px; }
+.score-chart-gridline { position: absolute; left: 0; right: 0; border-top: 1px dashed rgba(255,255,255,.14); }
+.score-chart-tick { position: absolute; left: -62px; top: -9px; width: 50px; text-align: right; color: var(--muted); font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.score-chart-bars { position: relative; z-index: 1; display: flex; align-items: flex-end; justify-content: center; gap: 26px; height: 100%; }
+.score-chart-col { flex: 1 1 0; max-width: 128px; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; }
+.score-chart-bar { position: relative; width: 100%; border-radius: 16px 16px 3px 3px; display: flex; align-items: flex-end; justify-content: center; }
+.score-chart-badge { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 48px; height: 48px; border-radius: 50%; background: #fff; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+.score-chart-logo { display: flex; align-items: center; justify-content: center; }
+.score-chart-logo svg { width: 26px; height: 26px; display: block; }
+.score-chart-monogram { font-size: 20px; font-weight: 900; letter-spacing: -.02em; }
+.score-chart-value { color: #fff; font-size: 19px; font-weight: 800; letter-spacing: -.02em; padding-bottom: 16px; font-variant-numeric: tabular-nums; text-shadow: 0 1px 3px rgba(0,0,0,.3); }
+.score-chart-labels { display: flex; justify-content: center; gap: 26px; padding-left: 62px; height: 86px; }
+.score-chart-label-col { flex: 1 1 0; max-width: 128px; position: relative; }
+.score-chart-label { position: absolute; top: 14px; right: 50%; transform: rotate(-33deg); transform-origin: top right; white-space: nowrap; color: var(--muted); font-size: 13.5px; font-weight: 700; }
+@media (max-width: 720px) {
+  .score-chart { padding: 16px 14px 6px; }
+  .score-chart-plot { height: 240px; padding-left: 44px; }
+  .score-chart-grid { inset: 0 0 0 44px; }
+  .score-chart-tick { left: -44px; width: 36px; font-size: 11px; }
+  .score-chart-bars, .score-chart-labels { gap: 12px; }
+  .score-chart-labels { padding-left: 44px; }
+  .score-chart-badge { width: 34px; height: 34px; top: 8px; }
+  .score-chart-logo svg { width: 18px; height: 18px; }
+  .score-chart-monogram { font-size: 15px; }
+  .score-chart-value { font-size: 14px; padding-bottom: 10px; }
+  .score-chart-label { font-size: 11px; }
+}
 .stat { padding: 18px; border-radius: 22px; background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.035)); border: 1px solid var(--border); }
 .stat.linked { transition: .15s ease; cursor: pointer; }
 .stat.linked:hover { border-color: rgba(139,92,246,.55); background: linear-gradient(180deg, rgba(139,92,246,.18), rgba(34,211,238,.08)); transform: translateY(-1px); }
@@ -889,6 +918,151 @@ function profileRunBreakdown(aggregate: SessionProfileAggregate): string {
   return parts.join(" · ");
 }
 
+/**
+ * Fallback bar colors for profiles without `branding` in their manifest,
+ * assigned by sort position. Mirrors the report's existing accent palette.
+ */
+const CHART_FALLBACK_COLORS = [
+  "#8B5CF6",
+  "#22D3EE",
+  "#34D399",
+  "#F59E0B",
+  "#F472B6",
+  "#60A5FA",
+];
+
+/**
+ * Re-validate a manifest-supplied color at render time. `loadProfile`
+ * already enforces this shape, but the report also reads manifest
+ * snapshots straight out of `run.json` artifacts (which bypass the zod
+ * schema), and the value lands in an inline `style` attribute — so the
+ * render layer keeps its own guard.
+ */
+export function safeBrandColor(color: string | undefined): string | undefined {
+  if (color !== undefined && /^#[0-9a-fA-F]{6}$/.test(color)) return color;
+  return undefined;
+}
+
+/**
+ * Same story for the logo: it's injected as raw SVG markup, and run.json
+ * snapshots bypass schema validation, so only accept something that
+ * looks like a plain inline SVG.
+ */
+export function safeBrandLogo(logo: string | undefined): string | undefined {
+  if (logo === undefined) return undefined;
+  const trimmed = logo.trim();
+  if (!trimmed.startsWith("<svg") || !trimmed.endsWith("</svg>"))
+    return undefined;
+  if (/<script|javascript:|on\w+\s*=/i.test(trimmed)) return undefined;
+  return trimmed;
+}
+
+/**
+ * Truncated y-axis domain for the profile score chart, in percent.
+ *
+ * Session scores cluster tightly (two good profiles may sit within a few
+ * points of each other), so a 0-100 axis would render near-identical
+ * bars. Like the benchmark charts this mirrors, the domain starts a
+ * little below the lowest score and ends just above the highest, snapped
+ * to 5-point steps, with a 10-point minimum span so a single-profile
+ * session still gets a sensible axis.
+ */
+export function chartDomain(scoresPct: number[]): { lo: number; hi: number } {
+  const min = Math.min(...scoresPct);
+  const max = Math.max(...scoresPct);
+  const hi = Math.min(100, Math.ceil((max + 2) / 5) * 5);
+  let lo = Math.max(0, Math.floor((min - 8) / 5) * 5);
+  if (hi - lo < 10) lo = Math.max(0, hi - 10);
+  return { lo, hi };
+}
+
+/**
+ * Benchmark-style bar chart of per-profile session scores: one branded
+ * bar per profile (color + logo from the profile manifest's `branding`,
+ * with palette/monogram fallbacks), score value inside the bar, dashed
+ * gridlines on a truncated axis, angled labels beneath. Pure HTML/CSS —
+ * the report stays a static server-rendered page with no chart library.
+ */
+function ProfileScoreChart({
+  profiles,
+}: {
+  profiles: SessionProfileAggregate[];
+}) {
+  if (profiles.length === 0) return null;
+  const sorted = [...profiles].sort((a, b) => b.scoreTotal - a.scoreTotal);
+  const { lo, hi } = chartDomain(sorted.map((p) => p.scoreTotal * 100));
+  const span = hi - lo;
+  // 5 dashed gridlines, top (hi) to bottom (lo), matching the reference.
+  const tickStep = span / 4;
+  const ticks = [0, 1, 2, 3, 4].map((i) => hi - i * tickStep);
+  const tickDigits = Number.isInteger(tickStep) ? 0 : 1;
+
+  return (
+    <div className="score-chart" role="img" aria-label="Profile scores chart">
+      <div className="score-chart-plot">
+        <div className="score-chart-grid">
+          {ticks.map((tick) => (
+            <div
+              key={tick}
+              className="score-chart-gridline"
+              style={{ bottom: `${((tick - lo) / span) * 100}%` }}
+            >
+              <span className="score-chart-tick">
+                {tick.toFixed(tickDigits)}%
+              </span>
+            </div>
+          ))}
+        </div>
+        <div className="score-chart-bars">
+          {sorted.map((profile, index) => {
+            const branding = profile.info?.branding;
+            const color =
+              safeBrandColor(branding?.color) ??
+              CHART_FALLBACK_COLORS[index % CHART_FALLBACK_COLORS.length];
+            const logo = safeBrandLogo(branding?.logo);
+            const pct = profile.scoreTotal * 100;
+            const heightPct = ((pct - lo) / span) * 100;
+            return (
+              <div key={profile.profileId} className="score-chart-col">
+                <div
+                  className="score-chart-bar"
+                  style={{
+                    // px floor keeps the badge + value legible even when
+                    // a score sits at the very bottom of the domain.
+                    height: `max(${heightPct.toFixed(2)}%, 96px)`,
+                    background: color,
+                  }}
+                >
+                  <span className="score-chart-badge" style={{ color }}>
+                    {logo ? (
+                      <span
+                        className="score-chart-logo"
+                        dangerouslySetInnerHTML={{ __html: logo }}
+                      />
+                    ) : (
+                      <span className="score-chart-monogram">
+                        {profile.profileId.slice(0, 1).toUpperCase()}
+                      </span>
+                    )}
+                  </span>
+                  <span className="score-chart-value">{pct.toFixed(1)}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className="score-chart-labels">
+        {sorted.map((profile) => (
+          <div key={profile.profileId} className="score-chart-label-col">
+            <span className="score-chart-label">{profile.profileId}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProfileAggregateCard({
   aggregate,
   href,
@@ -968,6 +1142,7 @@ function SessionPage({ session }: { session: ReportSessionDetail }) {
         <p className="section-subtle">
           Total score per profile, summed across every test in this run.
         </p>
+        <ProfileScoreChart profiles={session.profiles} />
         <div className="cards profile-cards">
           {session.profiles.map((aggregate) => (
             <ProfileAggregateCard

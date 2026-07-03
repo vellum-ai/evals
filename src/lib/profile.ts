@@ -45,6 +45,32 @@ export const ProfileManifestSchema = z.object({
    *   "setup": ["vellum exec -- assistant plugins install simple-memory"]
    */
   setup: z.union([z.string(), z.array(z.string())]).optional(),
+  /**
+   * Visual identity for report charts (the session page's profile-score
+   * graphic). Stored on the manifest — not the report layer — so the
+   * snapshot stamped onto every run (`RunMetadata.profileManifest`)
+   * carries it, and exported bundles render branded charts with no
+   * access to `profiles/`.
+   */
+  branding: z
+    .object({
+      /**
+       * Bar/accent color as a 6-digit hex (e.g. `#8B5CF6`). Validated
+       * strictly because the value is interpolated into inline styles.
+       */
+      color: z.string().regex(/^#[0-9a-fA-F]{6}$/, {
+        message: "branding.color must be a 6-digit hex color like #8B5CF6",
+      }),
+      /**
+       * Inline SVG markup for the logo badge, rendered inside a white
+       * circle at the top of the profile's bar. Use `fill="currentColor"`
+       * (or omit fills) so the badge can tint the mark with the profile
+       * color. When omitted, the chart falls back to a monogram of the
+       * profile id's first letter.
+       */
+      logo: z.string().optional(),
+    })
+    .optional(),
 });
 
 export type ProfileManifest = z.infer<typeof ProfileManifestSchema>;

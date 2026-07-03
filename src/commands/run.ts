@@ -88,6 +88,11 @@ export function registerRunCommand(program: Command): void {
       "[DEPRECATED] Alias for --filter. Use --benchmark <id> --filter <ids> instead.",
     )
     .option(
+      "--limit <n>",
+      "Run only the first N units of the benchmark, in the benchmark's natural unit order. Composes with --filter (the limit applies after filtering).",
+      (value) => Number(value),
+    )
+    .option(
       "--label <label>",
       "Human-readable tag stamped onto every (profile, unit) execution in this run, so they cluster together in the report server",
     )
@@ -108,6 +113,7 @@ export function registerRunCommand(program: Command): void {
         benchmark: string;
         filter?: string;
         tests?: string;
+        limit?: number;
         label?: string;
         maxTurns?: number;
         quiet?: boolean;
@@ -183,6 +189,18 @@ export function registerRunCommand(program: Command): void {
         const benchmark = await loadBenchmark(opts.benchmark);
         const filterIds = filter !== undefined ? splitCsv(filter) : [];
 
+        // `--limit N` truncates the selected units to the first N in the
+        // benchmark's natural order — a readable alternative to spelling
+        // out N unit ids in --filter. Validated here so every benchmark
+        // sees either `undefined` or a positive integer.
+        if (opts.limit !== undefined) {
+          if (!Number.isInteger(opts.limit) || opts.limit <= 0) {
+            throw new Error(
+              `--limit must be a positive integer (got "${opts.limit}")`,
+            );
+          }
+        }
+
         // `--quiet` still lets the per-run `result` summary and any
         // `status: "error"` events through so operators get one line per
         // run telling them what happened. Without the filter, a silent
@@ -214,6 +232,7 @@ export function registerRunCommand(program: Command): void {
           profiles,
           filterIds,
           filterFlag: filter,
+          limit: opts.limit,
           session,
           sessionLabel,
           cliArgv,

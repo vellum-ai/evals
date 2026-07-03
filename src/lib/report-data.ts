@@ -215,6 +215,19 @@ export interface ReportSessionSummary {
   testIds: string[];
   startedAt?: string;
   completedAt?: string;
+  /**
+   * Sum of every run's wall-clock runtime (ms) across the whole session —
+   * undefined when any run lacks the field (legacy runs) so the UI shows
+   * "—" rather than a misleading partial sum. Same semantics as
+   * `SessionProfileAggregate.totalRuntimeMs`, so the session total equals
+   * the sum of its profile cards.
+   */
+  totalRuntimeMs?: number;
+  /**
+   * Sum of every run's cost (USD) across the whole session — undefined
+   * when any run lacks it, mirroring `SessionProfileAggregate.totalCostUsd`.
+   */
+  totalCostUsd?: number;
   scoreTotal: number;
   status: SessionStatus;
 }
@@ -573,6 +586,15 @@ function summarizeSession(runs: ReportRunSummary[]): ReportSessionSummary {
     ).sort(),
     startedAt: earliest(runs.map((run) => run.startedAt)),
     completedAt: latest(runs.map((run) => run.completedAt)),
+    // Sum per-run runtime/cost across the whole session. Undefined when
+    // any run lacks the field (legacy runs) so the UI shows "—" rather
+    // than a misleading partial sum — same rule as `aggregateByProfile`.
+    totalRuntimeMs: runs.every((run) => run.runtimeMs !== undefined)
+      ? runs.reduce((sum, run) => sum + (run.runtimeMs ?? 0), 0)
+      : undefined,
+    totalCostUsd: runs.every((run) => run.totalCostUsd !== undefined)
+      ? runs.reduce((sum, run) => sum + (run.totalCostUsd ?? 0), 0)
+      : undefined,
     scoreTotal: aggregateScore(runs),
     status: deriveSessionStatus(runs),
   };

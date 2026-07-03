@@ -15,6 +15,7 @@ import type {
   BenchmarkRunInput,
   BenchmarkRunResult,
 } from "../../../src/lib/benchmark";
+import { applyUnitLimit } from "../../../src/lib/benchmark";
 import { listBenchmarkUnitIds } from "../../../src/lib/catalog";
 import {
   runEvalOnce,
@@ -68,6 +69,7 @@ export async function run(
     profiles,
     filterIds,
     filterFlag,
+    limit,
     session,
     sessionLabel,
     cliArgv,
@@ -92,10 +94,11 @@ export async function run(
   // Experimental units (declared via `status: experimental` in SPEC.md
   // frontmatter) are pending QA and often depend on stubbed fixtures, so
   // default unfiltered runs skip them. An explicit --filter opts in.
-  const tests =
+  const nonExperimental =
     filterIds.length > 0
       ? loadedTests
       : loadedTests.filter((test) => test.status !== "experimental");
+  const tests = applyUnitLimit(nonExperimental, limit);
   if (tests.length === 0) {
     throw new Error(
       `Benchmark "${benchmark.id}" has no non-experimental ${benchmark.manifest.unitNoun} units — pass --filter to run experimental units explicitly`,

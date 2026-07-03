@@ -335,6 +335,100 @@ describe("report data", () => {
     expect(match).toMatchObject(expected);
   });
 
+  test("session summary sums run runtimes and costs, and drops to undefined when any run lacks them", async () => {
+    // Round-9 feedback: the overall page shows total duration + total
+    // cost. Totals follow the same all-or-undefined rule as the
+    // per-profile aggregates so a legacy or cost-less run can't produce
+    // a silently misleading partial sum.
+    const sessionTag = `session-totals-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const runIdA = await freshRunId("totals-a");
+    const runIdB = await freshRunId("totals-b");
+
+    await Promise.all([
+      writeRunMetadata(runIdA, {
+        runId: runIdA,
+        sessionId: sessionTag,
+        profileId: "p1",
+        testId: "t1",
+        status: "completed",
+        startedAt: "2026-05-15T12:00:00.000Z",
+        completedAt: "2026-05-15T12:00:02.000Z",
+        artifactDir: runArtifacts(runIdA).runDir,
+      }),
+      writeRunMetadata(runIdB, {
+        runId: runIdB,
+        sessionId: sessionTag,
+        profileId: "p2",
+        testId: "t1",
+        status: "completed",
+        startedAt: "2026-05-15T12:00:03.000Z",
+        completedAt: "2026-05-15T12:00:06.000Z",
+        artifactDir: runArtifacts(runIdB).runDir,
+      }),
+    ]);
+    await writeUsage(runIdA, {
+      requests: [{ model: "m" }],
+      totalInputTokens: 10,
+      totalOutputTokens: 5,
+      totalCostUsd: 0.25,
+    });
+    await writeUsage(runIdB, {
+      requests: [{ model: "m" }],
+      totalInputTokens: 20,
+      totalOutputTokens: 10,
+      totalCostUsd: 0.5,
+    });
+
+    const sessions = await listReportSessions();
+    const match = sessions.find((session) => session.sessionId === sessionTag);
+    expect(match).toBeDefined();
+    // 2s + 3s of per-run wall clock; $0.25 + $0.50 of cost.
+    expect(match?.totalRuntimeMs).toBe(5000);
+    expect(match?.totalCostUsd).toBeCloseTo(0.75, 8);
+
+    // A second session where one run has no usage.json — cost must be
+    // undefined, runtime still sums because both runs have timestamps.
+    const partialTag = `session-partial-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const runIdC = await freshRunId("totals-c");
+    const runIdD = await freshRunId("totals-d");
+    await Promise.all([
+      writeRunMetadata(runIdC, {
+        runId: runIdC,
+        sessionId: partialTag,
+        profileId: "p1",
+        testId: "t1",
+        status: "completed",
+        startedAt: "2026-05-15T12:00:00.000Z",
+        completedAt: "2026-05-15T12:00:01.000Z",
+        artifactDir: runArtifacts(runIdC).runDir,
+      }),
+      writeRunMetadata(runIdD, {
+        runId: runIdD,
+        sessionId: partialTag,
+        profileId: "p2",
+        testId: "t1",
+        status: "completed",
+        startedAt: "2026-05-15T12:00:02.000Z",
+        completedAt: "2026-05-15T12:00:03.000Z",
+        artifactDir: runArtifacts(runIdD).runDir,
+      }),
+    ]);
+    await writeUsage(runIdC, {
+      requests: [{ model: "m" }],
+      totalInputTokens: 10,
+      totalOutputTokens: 5,
+      totalCostUsd: 0.25,
+    });
+
+    const sessionsAfter = await listReportSessions();
+    const partial = sessionsAfter.find(
+      (session) => session.sessionId === partialTag,
+    );
+    expect(partial).toBeDefined();
+    expect(partial?.totalRuntimeMs).toBe(2000);
+    expect(partial?.totalCostUsd).toBeUndefined();
+  });
+
   test("cliArgv is captured on each run summary and surfaced on the session summary", async () => {
     // `commands/run.ts` stamps the originating `process.argv` onto
     // every `RunMetadata` it writes; the report layer is responsible

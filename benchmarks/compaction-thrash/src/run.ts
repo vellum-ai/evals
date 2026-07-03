@@ -21,6 +21,7 @@ import type {
   BenchmarkRunInput,
   BenchmarkRunResult,
 } from "../../../src/lib/benchmark.js";
+import { applyUnitLimit } from "../../../src/lib/benchmark.js";
 import { listBenchmarkUnitIds } from "../../../src/lib/catalog.js";
 import type { EvalProgressReporter } from "../../../src/lib/runner/progress.js";
 import { wasErrorReportedToProgress } from "../../../src/lib/runner/run-once.js";
@@ -71,16 +72,18 @@ export async function run(
     profiles,
     filterIds,
     filterFlag,
+    limit,
     session,
     sessionLabel,
     cliArgv,
     progress,
   } = input;
 
-  const scenarioIds =
+  const selectedScenarioIds =
     filterIds.length > 0
       ? filterIds
       : await listBenchmarkUnitIds(benchmark.unitsDir);
+  const scenarioIds = applyUnitLimit(selectedScenarioIds, limit);
   if (scenarioIds.length === 0) {
     throw new Error(
       filterFlag !== undefined

@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { loadBenchmark } from "../benchmark";
+import { applyUnitLimit, loadBenchmark } from "../benchmark";
 
 const originalBenchmarksDir = process.env.EVALS_BENCHMARKS_DIR;
 
@@ -129,5 +129,28 @@ describe("loadBenchmark", () => {
     await writeFile(join(dir, "broken", "manifest.json"), "{not json", "utf8");
 
     await expect(loadBenchmark("broken")).rejects.toThrow(/is not valid JSON/);
+  });
+});
+
+describe("applyUnitLimit", () => {
+  test("returns the units untouched when limit is undefined", () => {
+    const units = ["a", "b", "c"];
+    expect(applyUnitLimit(units, undefined)).toEqual(["a", "b", "c"]);
+  });
+
+  test("keeps the first N units in their natural order", () => {
+    const units = ["a", "b", "c", "d"];
+    expect(applyUnitLimit(units, 2)).toEqual(["a", "b"]);
+  });
+
+  test("is a no-op when the limit exceeds the selection", () => {
+    const units = ["a", "b"];
+    expect(applyUnitLimit(units, 10)).toEqual(["a", "b"]);
+  });
+
+  test("does not mutate the input array", () => {
+    const units = ["a", "b", "c"];
+    applyUnitLimit(units, 1);
+    expect(units).toEqual(["a", "b", "c"]);
   });
 });

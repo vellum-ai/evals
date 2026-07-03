@@ -215,6 +215,53 @@ describe("priceUsageRecord", () => {
     expect(result.diagnostic).toBeUndefined();
   });
 
+  test("uses provider-reported usage.cost when present (OpenRouter usage accounting)", () => {
+    // OpenRouter stamps the billed cost (USD credits) onto the usage
+    // object of every response — including cache discounts the local
+    // table can't know about. This is also the only reliable pricing
+    // path for OpenRouter: its echoed model ids (version-before-name,
+    // date-suffixed) don't match the table's key shapes. Record shape
+    // taken from a real jailed Hermes turn.
+    const result = priceUsageRecord({
+      provider: "openrouter",
+      model: "anthropic/claude-4.6-opus-20260205",
+      input_tokens: 17_417,
+      output_tokens: 5,
+      usage: {
+        prompt_tokens: 17_417,
+        completion_tokens: 5,
+        total_tokens: 17_422,
+        cost: 0.1089775,
+      },
+    });
+    expect(result.costUsd).toBeCloseTo(0.1089775, 8);
+    expect(result.diagnostic).toBeUndefined();
+  });
+
+  test("daemon-supplied estimatedCostUsd still wins over usage.cost", () => {
+    const result = priceUsageRecord({
+      provider: "openrouter",
+      model: "anthropic/claude-4.6-opus-20260205",
+      estimatedCostUsd: 0.5,
+      input_tokens: 100,
+      output_tokens: 10,
+      usage: { cost: 0.1 },
+    });
+    expect(result.costUsd).toBe(0.5);
+  });
+
+  test("ignores a non-numeric usage.cost and falls through to the table path", () => {
+    const result = priceUsageRecord({
+      provider: "openrouter",
+      model: "someupstream/unknown-model",
+      input_tokens: 100,
+      output_tokens: 10,
+      usage: { cost: "not-a-number" },
+    });
+    expect(result.costUsd).toBeUndefined();
+    expect(result.diagnostic?.reason).toBe("unpriced_model");
+  });
+
   test("does not normalize dots for non-Anthropic providers", () => {
     // OpenAI genuinely ships dot-versioned ids (`gpt-4.1`). The
     // canonicalization rule is Anthropic-only — confirm the OpenAI path

@@ -226,6 +226,27 @@ describe("report html", () => {
     expect(html).toContain('href="/"');
   });
 
+  test("session page shows a Publish button in readOnly mode", () => {
+    const html = renderReportPage(
+      { kind: "session", session: sessionDetail },
+      { readOnly: true },
+    );
+    expect(html).toContain('class="publish-btn"');
+    expect(html).toContain('data-session-id="session-1"');
+    expect(html).toContain("Publish");
+    // The publish script is injected.
+    expect(html).toContain("/api/evals/publish");
+    expect(html).toContain("credentials:");
+  });
+
+  test("session page hides the Publish button in live (non-readOnly) mode", () => {
+    const html = renderReportPage({ kind: "session", session: sessionDetail });
+    // CSS class definitions ship in STYLES regardless; assert the button
+    // element and script are absent.
+    expect(html).not.toContain('class="publish-btn"');
+    expect(html).not.toContain("/api/evals/publish");
+  });
+
   test("profile-in-session page renders the info panel and per-test scores", () => {
     // GIVEN a profile drill-in with a manifest and one test
     // WHEN we render the profile page

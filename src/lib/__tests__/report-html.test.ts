@@ -1282,10 +1282,10 @@ describe("profile score chart", () => {
     expect(html.indexOf("100.0")).toBeLessThan(html.indexOf("50.0"));
   });
 
-  test("gridline ticks span a truncated domain", () => {
+  test("gridline ticks span the full 0-100 domain", () => {
     const html = renderReportPage({ kind: "session", session: brandedSession });
-    // Scores 100 and 50 -> domain [40, 100], five ticks stepping by 15.
-    for (const tick of ["100%", "85%", "70%", "55%", "40%"]) {
+    // Domain is always 0-100, five ticks stepping by 25.
+    for (const tick of ["100%", "75%", "50%", "25%", "0%"]) {
       expect(html).toContain(`>${tick}<`);
     }
   });
@@ -1352,20 +1352,12 @@ describe("darkenHex", () => {
 });
 
 describe("chartDomain", () => {
-  test("truncates around clustered scores on 5-point steps", () => {
-    expect(chartDomain([94.3, 96.2, 95.4])).toEqual({ lo: 85, hi: 100 });
-  });
-
-  test("keeps a minimum 10-point span", () => {
-    expect(chartDomain([100, 100])).toEqual({ lo: 90, hi: 100 });
-  });
-
-  test("clamps to the 0-100 range", () => {
-    expect(chartDomain([0])).toEqual({ lo: 0, hi: 5 });
-    expect(chartDomain([99.9])).toEqual({ lo: 90, hi: 100 });
-  });
-
-  test("spreads a mid-range single score", () => {
-    expect(chartDomain([50])).toEqual({ lo: 40, hi: 55 });
+  test("always returns 0-100 regardless of score distribution", () => {
+    expect(chartDomain([100, 100])).toEqual({ lo: 0, hi: 100 });
+    expect(chartDomain([94.3, 96.2, 95.4])).toEqual({ lo: 0, hi: 100 });
+    expect(chartDomain([0])).toEqual({ lo: 0, hi: 100 });
+    expect(chartDomain([50])).toEqual({ lo: 0, hi: 100 });
+    expect(chartDomain([72, 73])).toEqual({ lo: 0, hi: 100 });
+    expect(chartDomain([0, 50, 100])).toEqual({ lo: 0, hi: 100 });
   });
 });

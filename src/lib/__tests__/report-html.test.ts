@@ -1352,20 +1352,30 @@ describe("darkenHex", () => {
 });
 
 describe("chartDomain", () => {
-  test("truncates around clustered scores on 5-point steps", () => {
-    expect(chartDomain([94.3, 96.2, 95.4])).toEqual({ lo: 85, hi: 100 });
+  test("truncates around clustered mid-range scores on 5-point steps", () => {
+    expect(chartDomain([74.3, 76.2, 75.4])).toEqual({ lo: 65, hi: 80 });
   });
 
-  test("keeps a minimum 10-point span", () => {
-    expect(chartDomain([100, 100])).toEqual({ lo: 90, hi: 100 });
+  test("anchors at 0-100 when all scores are near the ceiling", () => {
+    expect(chartDomain([100, 100])).toEqual({ lo: 0, hi: 100 });
+    expect(chartDomain([94.3, 96.2, 95.4])).toEqual({ lo: 0, hi: 100 });
+    expect(chartDomain([99.9])).toEqual({ lo: 0, hi: 100 });
+    expect(chartDomain([85, 90])).toEqual({ lo: 0, hi: 100 });
+  });
+
+  test("truncates when scores span across the 85 boundary", () => {
+    expect(chartDomain([80, 90])).toEqual({ lo: 70, hi: 95 });
   });
 
   test("clamps to the 0-100 range", () => {
     expect(chartDomain([0])).toEqual({ lo: 0, hi: 5 });
-    expect(chartDomain([99.9])).toEqual({ lo: 90, hi: 100 });
   });
 
   test("spreads a mid-range single score", () => {
     expect(chartDomain([50])).toEqual({ lo: 40, hi: 55 });
+  });
+
+  test("keeps a minimum 10-point span for mid-range clusters", () => {
+    expect(chartDomain([72, 73])).toEqual({ lo: 60, hi: 75 });
   });
 });

@@ -992,6 +992,14 @@ export function chartDomain(scoresPct: number[]): { lo: number; hi: number } {
   const min = Math.min(...scoresPct);
   const max = Math.max(...scoresPct);
   const hi = Math.min(100, Math.ceil((max + 2) / 5) * 5);
+
+  // Truncation is useful when scores cluster in the middle (e.g. 70-85%):
+  // a 0-100 axis would render near-identical bars. But when scores are
+  // near the ceiling (min >= 85), truncating to a narrow [90, 100] band
+  // makes every bar look full and the axis read as broken. In that case,
+  // anchor at 0 so the bars reflect their actual proportion.
+  if (min >= 85) return { lo: 0, hi: 100 };
+
   let lo = Math.max(0, Math.floor((min - 8) / 5) * 5);
   if (hi - lo < 10) lo = Math.max(0, hi - 10);
   return { lo, hi };

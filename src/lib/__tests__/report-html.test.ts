@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   chartDomain,
+  darkenHex,
   formatCliCommand,
   renderReportPage,
   safeBrandColor,
@@ -1314,6 +1315,18 @@ describe("safeBrandLogo", () => {
     expect(
       safeBrandLogo('<svg><path d="M0 0"/></svg> trailing'),
     ).toBeUndefined();
+  });
+});
+
+describe("darkenHex", () => {
+  test("darkens each channel by the default factor", () => {
+    expect(darkenHex("#ffffff")).toBe("#9e9e9e");
+    expect(darkenHex("#000000")).toBe("#000000");
+    expect(darkenHex("#B08D57")).toBe("#6d5736");
+  });
+
+  test("pads single-digit channels", () => {
+    expect(darkenHex("#100804")).toBe("#0a0502");
   });
 });
 

@@ -497,6 +497,13 @@ h1 { font-size: clamp(34px, 5vw, 64px); line-height: .95; margin: 10px 0; letter
 .crumbs a { border-bottom: 1px dotted rgba(180,190,255,.32); }
 .crumbs a:hover { color: var(--accent2); border-color: var(--accent2); }
 .run-heading { font-size: 32px; margin: 0 0 6px; letter-spacing: -.04em; }
+.session-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.session-header .run-heading { margin: 0; }
+.publish-btn { flex-shrink: 0; padding: 10px 20px; border-radius: 10px; border: 1px solid rgba(139,92,246,.5); background: rgba(139,92,246,.15); color: #c4b5fd; font-size: 14px; font-weight: 700; cursor: pointer; transition: .15s ease; }
+.publish-btn:hover { background: rgba(139,92,246,.28); border-color: rgba(139,92,246,.7); }
+.publish-btn:disabled { cursor: default; opacity: .7; }
+.publish-btn.published { color: #6ee7b7; border-color: rgba(52,211,153,.5); background: rgba(52,211,153,.12); }
+.publish-btn.error { color: var(--bad); border-color: rgba(251,113,133,.5); background: rgba(251,113,133,.1); }
 .run-heading-meta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 13px; margin-bottom: 22px; }
 .run-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
 .profile-info { margin: 0; display: grid; gap: 14px; padding: 18px 20px; border: 1px solid var(--border); border-radius: 18px; background: rgba(255,255,255,.04); }
@@ -1131,7 +1138,13 @@ function TestRow({
   );
 }
 
-function SessionPage({ session }: { session: ReportSessionDetail }) {
+function SessionPage({
+  session,
+  readOnly = false,
+}: {
+  session: ReportSessionDetail;
+  readOnly?: boolean;
+}) {
   return (
     <>
       <Crumbs
@@ -1140,7 +1153,18 @@ function SessionPage({ session }: { session: ReportSessionDetail }) {
           { label: sessionTitle(session) },
         ]}
       />
-      <h1 className="run-heading">{sessionTitle(session)}</h1>
+      <div className="session-header">
+        <h1 className="run-heading">{sessionTitle(session)}</h1>
+        {readOnly && (
+          <button
+            type="button"
+            className="publish-btn"
+            data-session-id={session.sessionId}
+          >
+            Publish
+          </button>
+        )}
+      </div>
       <div className="run-heading-meta">
         <StatusBadge status={session.status} />
         {session.sessionLabel ? (
@@ -1594,6 +1618,45 @@ const SURFACE_VELLUM_BRIDGE = `<script>
     sendAction:function(){},
     fetch:function(){return Promise.reject(new Error("vellum bridge unavailable in offline report"));}
   };
+})();
+</script>`;
+
+/**
+ * Client-side script for the session page Publish button. POSTs to the
+ * hosting origin's `/api/evals/publish` endpoint with the session ID.
+ * Auth relies on the browser's cookie jar — the report iframe is
+ * same-origin with qa.vellum.ai (sandbox `allow-same-origin`), so
+ * `credentials: include` sends the platform session cookie. The API
+ * itself is stubbed server-side for now; this script just ensures the
+ * request is well-formed and authed.
+ */
+const PUBLISH_SCRIPT = `<script>
+(function(){
+  var btn=document.querySelector('.publish-btn');
+  if(!btn) return;
+  var sessionId=btn.getAttribute('data-session-id');
+  if(!sessionId) return;
+  btn.addEventListener('click', function(){
+    if(btn.disabled) return;
+    btn.disabled=true;
+    btn.textContent='Publishing…';
+    btn.className='publish-btn';
+    fetch(window.location.origin+'/api/evals/publish',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      credentials:'include',
+      body:JSON.stringify({sessionId:sessionId})
+    }).then(function(res){
+      if(!res.ok) throw new Error('Publish failed: '+res.status);
+      btn.textContent='Published';
+      btn.className='publish-btn published';
+    }).catch(function(err){
+      btn.textContent='Failed';
+      btn.className='publish-btn error';
+      btn.disabled=false;
+      console.error('Publish error:',err);
+    });
+  });
 })();
 </script>`;
 
@@ -2770,7 +2833,7 @@ function PageBody({
     case "index":
       return <IndexPage sessions={input.sessions} readOnly={readOnly} />;
     case "session":
-      return <SessionPage session={input.session} />;
+      return <SessionPage session={input.session} readOnly={readOnly} />;
     case "profile":
       return <ProfileInSessionPage profile={input.profile} />;
     case "test":
@@ -2806,6 +2869,9 @@ function ReportDocument({
         <div className="shell">
           <PageBody input={input} readOnly={readOnly} />
         </div>
+        {readOnly && (
+          <script dangerouslySetInnerHTML={{ __html: PUBLISH_SCRIPT }} />
+        )}
       </body>
     </html>
   );

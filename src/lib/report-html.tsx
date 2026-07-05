@@ -989,12 +989,10 @@ export function darkenHex(hex: string, factor = 0.62): string {
  * session still gets a sensible axis.
  */
 export function chartDomain(scoresPct: number[]): { lo: number; hi: number } {
-  const min = Math.min(...scoresPct);
-  const max = Math.max(...scoresPct);
-  const hi = Math.min(100, Math.ceil((max + 2) / 5) * 5);
-  let lo = Math.max(0, Math.floor((min - 8) / 5) * 5);
-  if (hi - lo < 10) lo = Math.max(0, hi - 10);
-  return { lo, hi };
+  // Always 0-100 — the bars should reflect their actual proportion, not
+  // a zoomed-in band that makes small differences look dramatic.
+  void scoresPct;
+  return { lo: 0, hi: 100 };
 }
 
 /**

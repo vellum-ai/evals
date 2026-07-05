@@ -384,6 +384,8 @@ describe("report data", () => {
     expect(match).toBeDefined();
     // 2s + 3s of per-run wall clock; $0.25 + $0.50 of cost.
     expect(match?.totalRuntimeMs).toBe(5000);
+    // Wall-clock: earliest start (12:00:00) → latest complete (12:00:06).
+    expect(match?.wallClockMs).toBe(6000);
     expect(match?.totalCostUsd).toBeCloseTo(0.75, 8);
 
     // A second session where one run has no usage.json — cost must be
@@ -426,6 +428,8 @@ describe("report data", () => {
     );
     expect(partial).toBeDefined();
     expect(partial?.totalRuntimeMs).toBe(2000);
+    // Wall-clock: 12:00:00 → 12:00:03 = 3s.
+    expect(partial?.wallClockMs).toBe(3000);
     expect(partial?.totalCostUsd).toBeUndefined();
   });
 

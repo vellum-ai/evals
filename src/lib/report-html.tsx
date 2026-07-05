@@ -1170,7 +1170,8 @@ function SessionPage({
         ) : null}
         <span>{session.runCount} executions</span>
         <span>started {session.startedAt ?? "—"}</span>
-        <span>total duration {formatDuration(session.totalRuntimeMs)}</span>
+        <span>wall-clock {formatDuration(session.wallClockMs)}</span>
+        <span>total test time {formatDuration(session.totalRuntimeMs)}</span>
         <span>total cost {formatCostCents(session.totalCostUsd)}</span>
       </div>
 

@@ -22,6 +22,7 @@ import {
   wasErrorReportedToProgress,
 } from "../../../src/lib/runner/run-once";
 import type { EvalProgressReporter } from "../../../src/lib/runner/progress";
+import { runWithConcurrency } from "../../../src/lib/runner/concurrency";
 import { loadTestDef } from "../../../src/lib/test-def";
 
 /**
@@ -106,41 +107,50 @@ export async function run(
   }
 
   let anyFailed = false;
-  for (const profile of profiles) {
-    for (const test of tests) {
+  // Build the full (profile, test) task list, then fan out across
+  // `workers` slots. Each unit hatches its own container(s) with a
+  // unique runId, so parallel execution is safe as long as the host
+  // has the resources.
+  const tasks = profiles.flatMap((profile) =>
+    tests.map((test) => {
       const id = runId(profile.id, test.id, timestampSuffix());
-      try {
-        await runEvalOnce({
-          profile,
-          test,
-          runId: id,
-          sessionId: session,
-          sessionLabel,
-          cliArgv,
-          maxTurns: input.maxTurns,
-          progress,
-        });
-      } catch (err) {
-        // Per-test isolation: a crash in one combination (e.g. the
-        // user simulator returning unparseable content) shouldn't take
-        // down the rest of the suite.
-        //
-        // The run-once layer normally already writes status:"failed" +
-        // error to the run's metadata and emits a red status:"error"
-        // progress event with diagnostic details before re-throwing —
-        // at which point we just flip the exit-code flag and move on.
-        // `wasErrorReportedToProgress` (checked inside
-        // `reportRunFailure`) is the explicit signal that path
-        // completed. The fallback path exists for "throw bypassed
-        // run-once's inner catch" cases (e.g. a future regression
-        // moves construction outside the try); emit one line through
-        // the same reporter so the operator gets SOMETHING — silent
-        // exit with exit-code 1 was the actual diagnostic gap that
-        // motivated this guard.
-        reportRunFailure(progress, err);
-        anyFailed = true;
-      }
-    }
-  }
+      return async () => {
+        try {
+          await runEvalOnce({
+            profile,
+            test,
+            runId: id,
+            sessionId: session,
+            sessionLabel,
+            cliArgv,
+            maxTurns: input.maxTurns,
+            progress,
+          });
+        } catch (err) {
+          // Per-test isolation: a crash in one combination (e.g. the
+          // user simulator returning unparseable content) shouldn't take
+          // down the rest of the suite.
+          //
+          // The run-once layer normally already writes status:"failed" +
+          // error to the run's metadata and emits a red status:"error"
+          // progress event with diagnostic details before re-throwing —
+          // at which point we just flip the exit-code flag and move on.
+          // `wasErrorReportedToProgress` (checked inside
+          // `reportRunFailure`) is the explicit signal that path
+          // completed. The fallback path exists for "throw bypassed
+          // run-once's inner catch" cases (e.g. a future regression
+          // moves construction outside the try); emit one line through
+          // the same reporter so the operator gets SOMETHING — silent
+          // exit with exit-code 1 was the actual diagnostic gap that
+          // motivated this guard.
+          reportRunFailure(progress, err);
+          throw err;
+        }
+      };
+    }),
+  );
+
+  const result = await runWithConcurrency(tasks, input.workers ?? 1);
+  anyFailed = result.anyFailed;
   return { anyFailed };
 }

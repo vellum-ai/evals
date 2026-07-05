@@ -32,6 +32,7 @@ import { applyUnitLimit } from "../../../src/lib/benchmark";
 import { getBenchmarksDir } from "../../../src/lib/catalog";
 import type { EvalProgressReporter } from "../../../src/lib/runner/progress";
 import { wasErrorReportedToProgress } from "../../../src/lib/runner/run-once";
+import { runWithConcurrency } from "../../../src/lib/runner/concurrency";
 
 import { loadLongMemEvalV2, type Tier, TIERS } from "./loader";
 import { runLongMemEvalV2Unit } from "./runner";
@@ -127,26 +128,36 @@ export async function run(
 
   let anyFailed = false;
   try {
-    for (const profile of profiles) {
-      for (const item of selected) {
+    // Build the full (profile, item) task list, then fan out across
+    // `workers` slots. The trajectory reader is concurrency-safe
+    // (positional pread, no shared cursor), and each unit hatches its
+    // own container(s) with a unique runId, so parallel execution is
+    // safe as long as the host has the resources.
+    const tasks = profiles.flatMap((profile) =>
+      selected.map((item) => {
         const id = runId(profile.id, item.questionId, timestampSuffix());
-        try {
-          await runLongMemEvalV2Unit({
-            profile,
-            item,
-            trajectoryReader,
-            runId: id,
-            sessionId: session,
-            sessionLabel,
-            cliArgv,
-            progress,
-          });
-        } catch (err) {
-          reportRunFailure(progress, err);
-          anyFailed = true;
-        }
-      }
-    }
+        return async () => {
+          try {
+            await runLongMemEvalV2Unit({
+              profile,
+              item,
+              trajectoryReader,
+              runId: id,
+              sessionId: session,
+              sessionLabel,
+              cliArgv,
+              progress,
+            });
+          } catch (err) {
+            reportRunFailure(progress, err);
+            throw err;
+          }
+        };
+      }),
+    );
+
+    const result = await runWithConcurrency(tasks, input.workers ?? 1);
+    anyFailed = result.anyFailed;
   } finally {
     // Always release the underlying file handle, even if the loop
     // bailed early on an unexpected throw. `close` is idempotent.

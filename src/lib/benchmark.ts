@@ -99,6 +99,14 @@ export interface BenchmarkRunInput {
    * ingest→ask flow) ignore it.
    */
   maxTurns: number | undefined;
+  /**
+   * Number of concurrent worker slots for the profile x unit loop.
+   * `undefined` or `1` means sequential (the default). Benchmarks
+   * use {@link runWithConcurrency} to fan out — each unit hatches its
+   * own container(s), so parallelism is safe as long as the host has
+   * the resources.
+   */
+  workers: number | undefined;
 }
 
 /**

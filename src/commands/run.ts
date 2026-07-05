@@ -104,6 +104,12 @@ export function registerRunCommand(program: Command): void {
       "Suppress per-step progress (still surfaces the final result and any errors)",
     )
     .option(
+      "--workers <n>",
+      "Number of concurrent runs to execute in parallel (default: 1). Each unit hatches its own container(s), so set this according to host resources.",
+      (value) => Number(value),
+      1,
+    )
+    .option(
       "--serve",
       "After the run finishes, start the local report server and open this run's session in the default browser. The server blocks until ctrl-C.",
     )
@@ -118,6 +124,7 @@ export function registerRunCommand(program: Command): void {
         maxTurns?: number;
         quiet?: boolean;
         serve?: boolean;
+        workers?: number;
       }) => {
         // Register signal handlers ONCE per `evals run` invocation (not
         // once per (profile, test) iteration — that would leak listeners
@@ -201,6 +208,17 @@ export function registerRunCommand(program: Command): void {
           }
         }
 
+        // `--workers N` controls how many (profile, unit) runs execute
+        // concurrently. Default is 1 (sequential). Must be a positive
+        // integer — 0 or negative would deadlock or no-op.
+        if (opts.workers !== undefined) {
+          if (!Number.isInteger(opts.workers) || opts.workers <= 0) {
+            throw new Error(
+              `--workers must be a positive integer (got "${opts.workers}")`,
+            );
+          }
+        }
+
         // `--quiet` still lets the per-run `result` summary and any
         // `status: "error"` events through so operators get one line per
         // run telling them what happened. Without the filter, a silent
@@ -238,6 +256,7 @@ export function registerRunCommand(program: Command): void {
           cliArgv,
           progress,
           maxTurns: opts.maxTurns,
+          workers: opts.workers,
         });
 
         if (anyFailed) {

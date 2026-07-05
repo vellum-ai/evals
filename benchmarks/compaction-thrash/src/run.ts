@@ -25,6 +25,7 @@ import { applyUnitLimit } from "../../../src/lib/benchmark.js";
 import { listBenchmarkUnitIds } from "../../../src/lib/catalog.js";
 import type { EvalProgressReporter } from "../../../src/lib/runner/progress.js";
 import { wasErrorReportedToProgress } from "../../../src/lib/runner/run-once.js";
+import { runWithConcurrency } from "../../../src/lib/runner/concurrency.js";
 
 import { runCompactionThrashScenario } from "./runner.js";
 
@@ -96,26 +97,31 @@ export async function run(
   const observeTicks = resolveTickCount("EVALS_COMPACTION_OBSERVE_TICKS", 10);
 
   let anyFailed = false;
-  for (const profile of profiles) {
-    for (const scenarioId of scenarioIds) {
+  const tasks = profiles.flatMap((profile) =>
+    scenarioIds.map((scenarioId) => {
       const id = runId(profile.id, scenarioId, timestampSuffix());
-      try {
-        await runCompactionThrashScenario({
-          profile,
-          scenarioId,
-          runId: id,
-          sessionId: session,
-          sessionLabel,
-          cliArgv,
-          progress,
-          seedTicks,
-          observeTicks,
-        });
-      } catch (err) {
-        reportRunFailure(progress, err);
-        anyFailed = true;
-      }
-    }
-  }
+      return async () => {
+        try {
+          await runCompactionThrashScenario({
+            profile,
+            scenarioId,
+            runId: id,
+            sessionId: session,
+            sessionLabel,
+            cliArgv,
+            progress,
+            seedTicks,
+            observeTicks,
+          });
+        } catch (err) {
+          reportRunFailure(progress, err);
+          throw err;
+        }
+      };
+    }),
+  );
+
+  const result = await runWithConcurrency(tasks, input.workers ?? 1);
+  anyFailed = result.anyFailed;
   return { anyFailed };
 }

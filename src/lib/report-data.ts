@@ -216,6 +216,14 @@ export interface ReportSessionSummary {
   startedAt?: string;
   completedAt?: string;
   /**
+   * Wall-clock elapsed time of the whole session (ms): the gap from
+   * the earliest run's `startedAt` to the latest run's `completedAt`.
+   * With `--workers 1` this roughly equals `totalRuntimeMs`; with
+   * `--workers N` the runs overlap so wall-clock is shorter than the
+   * sum. Undefined when either timestamp is missing.
+   */
+  wallClockMs?: number;
+  /**
    * Sum of every run's wall-clock runtime (ms) across the whole session —
    * undefined when any run lacks the field (legacy runs) so the UI shows
    * "—" rather than a misleading partial sum. Same semantics as
@@ -586,6 +594,15 @@ function summarizeSession(runs: ReportRunSummary[]): ReportSessionSummary {
     ).sort(),
     startedAt: earliest(runs.map((run) => run.startedAt)),
     completedAt: latest(runs.map((run) => run.completedAt)),
+    // Wall-clock = earliest start → latest complete. With --workers N
+    // runs overlap, so this is shorter than the sum of per-run runtimes.
+    wallClockMs: (() => {
+      const start = earliest(runs.map((run) => run.startedAt));
+      const end = latest(runs.map((run) => run.completedAt));
+      if (!start || !end) return undefined;
+      const ms = Date.parse(end) - Date.parse(start);
+      return ms > 0 ? ms : undefined;
+    })(),
     // Sum per-run runtime/cost across the whole session. Undefined when
     // any run lacks the field (legacy runs) so the UI shows "—" rather
     // than a misleading partial sum — same rule as `aggregateByProfile`.

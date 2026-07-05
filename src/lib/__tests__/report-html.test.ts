@@ -1129,16 +1129,18 @@ describe("report html", () => {
     expect(html).not.toContain("/repo/evals/src/cli.ts");
   });
 
-  test("session page shows total duration and total cost in the heading meta", () => {
+  test("session page shows wall-clock, total test time, and total cost in the heading meta", () => {
     const html = renderReportPage({
       kind: "session",
       session: {
         ...sessionDetail,
+        wallClockMs: 12_000,
         totalRuntimeMs: 173_000,
         totalCostUsd: 1.234,
       },
     });
-    expect(html).toContain("total duration 2m 53s");
+    expect(html).toContain("wall-clock 12s");
+    expect(html).toContain("total test time 2m 53s");
     expect(html).toContain("total cost $1.23");
   });
 
@@ -1147,11 +1149,13 @@ describe("report html", () => {
       kind: "session",
       session: {
         ...sessionDetail,
+        wallClockMs: undefined,
         totalRuntimeMs: undefined,
         totalCostUsd: undefined,
       },
     });
-    expect(html).toContain("total duration —");
+    expect(html).toContain("wall-clock —");
+    expect(html).toContain("total test time —");
     expect(html).toContain("total cost —");
   });
 

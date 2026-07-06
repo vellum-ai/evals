@@ -342,7 +342,7 @@ export async function runCompactionThrashScenario(
   const observeTickCount = input.observeTicks ?? DEFAULT_OBSERVE_TICKS;
   const totalTicks = seedTicks + observeTickCount;
 
-  const { progress, dispose } = createRunProgressLifecycle({
+  const { progress, dispose, flush } = createRunProgressLifecycle({
     runId: input.runId,
     userProgress: input.progress,
   });
@@ -585,5 +585,10 @@ export async function runCompactionThrashScenario(
     } catch {
       // Best-effort teardown.
     }
+    // Wait for queued `progress.ndjson` appends before resolving —
+    // the auto-publish bundle snapshot in `commands/run.ts` fires as
+    // soon as `benchmark.run` resolves, and a still-pending append
+    // would be missing from the uploaded logs. Never rejects.
+    await flush();
   }
 }

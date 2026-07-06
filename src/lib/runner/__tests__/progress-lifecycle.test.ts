@@ -14,6 +14,12 @@
  *   3. the standalone ticker keeps bumping the heartbeat even when no
  *      progress events are flowing
  *   4. `dispose()` stops the ticker (and is idempotent)
+ *   5. `flush()` resolves only after every event emitted so far is on
+ *      disk in `progress.ndjson`, never rejects, and still covers
+ *      events emitted after `dispose()` (the `runEvalOnce` shutdown
+ *      pattern) — this is what lets `commands/run.ts` snapshot the
+ *      publish bundle the moment `benchmark.run` resolves without
+ *      truncating runner logs
  *
  * Backed by real disk state via `ensureRunArtifacts` — same pattern
  * `metrics.test.ts` uses. Avoids a metrics-module mock seam since the
@@ -274,6 +280,80 @@ describe("createRunProgressLifecycle", () => {
     expect(() => dispose()).not.toThrow();
     expect(() => dispose()).not.toThrow();
     expect(() => dispose()).not.toThrow();
+  });
+
+  test("flush() drains: every event emitted before it is on disk when it resolves", async () => {
+    const runId = await prepareRun();
+
+    const { progress, dispose, flush } = createRunProgressLifecycle({
+      runId,
+      heartbeatMs: 60_000,
+    });
+    try {
+      // Enough events that the fire-and-forget append chain is
+      // guaranteed to still have pending links when we hit flush().
+      const total = 50;
+      for (let i = 0; i < total; i++) {
+        progress(sampleEvent({ message: `event-${i}` }));
+      }
+
+      await flush();
+
+      // No waitFor polling — the whole point of flush() is that the
+      // file is complete the instant it resolves. This is the contract
+      // the auto-publish bundle snapshot in `commands/run.ts` relies on.
+      const lines = await readProgressLines(runId);
+      expect(lines).toHaveLength(total);
+      const parsed = lines.map((l) => JSON.parse(l) as EvalProgressEvent);
+      for (let i = 0; i < total; i++) {
+        expect(parsed[i]?.message).toBe(`event-${i}`);
+      }
+    } finally {
+      dispose();
+    }
+  });
+
+  test("flush() covers events emitted after dispose() (runEvalOnce shutdown pattern)", async () => {
+    const runId = await prepareRun();
+
+    const { progress, dispose, flush } = createRunProgressLifecycle({
+      runId,
+      heartbeatMs: 60_000,
+    });
+    progress(sampleEvent({ message: "before-dispose" }));
+    dispose();
+    // `runEvalOnce` emits its shutdown start/done events after
+    // dispose() in the finally, then awaits flush() last.
+    progress(sampleEvent({ step: "shutdown", message: "after-dispose" }));
+
+    await flush();
+
+    const lines = await readProgressLines(runId);
+    expect(lines).toHaveLength(2);
+    expect((JSON.parse(lines[1]!) as EvalProgressEvent).message).toBe(
+      "after-dispose",
+    );
+  });
+
+  test("flush() never rejects, even when the appends themselves fail", async () => {
+    const runId = await prepareRun();
+
+    const { progress, dispose, flush } = createRunProgressLifecycle({
+      runId,
+      heartbeatMs: 60_000,
+    });
+    try {
+      // Nuke the run dir so appendFile has nowhere to write — every
+      // queued append fails. flush() must still resolve (a rejection
+      // here would mask the run's real error in the runners' finally).
+      await rm(runArtifacts(runId).runDir, { recursive: true, force: true });
+      progress(sampleEvent({ message: "doomed-1" }));
+      progress(sampleEvent({ message: "doomed-2" }));
+
+      await expect(flush()).resolves.toBeUndefined();
+    } finally {
+      dispose();
+    }
   });
 
   test("the standalone ticker is unref'd (does not keep the loop alive)", () => {

@@ -11,6 +11,7 @@ import {
   setRunMetadataObserver,
 } from "../lib/metrics";
 import { reapAbandonedEvalContainers } from "../lib/adapters/docker-reaper";
+import { autoPublishSession } from "../lib/auto-publish";
 import { loadBenchmark } from "../lib/benchmark";
 import { DEFAULT_BENCHMARK_ID } from "../lib/catalog";
 import { loadProfile } from "../lib/profile";
@@ -40,46 +41,6 @@ const SIGNAL_EXIT_CODES: Record<"SIGINT" | "SIGTERM", number> = {
  * best-effort.
  */
 const SIGNAL_FLUSH_TIMEOUT_MS = 2000;
-
-/**
- * Upper bound on the normal-path final drain of live events. The emitter's
- * consecutive-failure circuit breaker already makes a dead dashboard drain
- * near-instantly; this generous cap is defense-in-depth against a dashboard
- * that is slow-but-not-failing, so completion/publish/serve is never held
- * up indefinitely by best-effort events.
- */
-const NORMAL_FLUSH_TIMEOUT_MS = 15_000;
-
-/**
- * Bounded drain of the emitter chain for the normal exit path. When the
- * cap fires we warn and move on rather than hold up the rest of the run
- * teardown (the emitter's settle() never rejects; wrapped defensively
- * anyway). Exported for tests only.
- */
-export async function settleEmitterBounded(
-  emitter: RunEventEmitter,
-  capMs: number = NORMAL_FLUSH_TIMEOUT_MS,
-): Promise<void> {
-  let drained = false;
-  const flush = emitter
-    .settle()
-    .then(() => {
-      drained = true;
-    })
-    .catch(() => {});
-  const cap = new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, capMs);
-    // Don't let the cap timer itself keep the event loop alive once the
-    // flush has won the race.
-    timer.unref?.();
-  });
-  await Promise.race([flush, cap]);
-  if (!drained) {
-    console.warn(
-      `[run-events] final event flush still pending after ${capMs}ms — continuing without it`,
-    );
-  }
-}
 
 /**
  * Bounded, best-effort flush of live run events for the signal path:
@@ -389,15 +350,26 @@ export function registerRunCommand(program: Command): void {
           // execution_completed builds enqueue onto the emitter chain
           // asynchronously, so first `await bridge.settle()` (all
           // execution_completed enqueued), THEN enqueue run_finished,
-          // then drain the sequential chain — bounded by
-          // NORMAL_FLUSH_TIMEOUT_MS as defense-in-depth (the emitter's
-          // circuit breaker already short-circuits a dead dashboard).
-          // A later PR auto-publishes the report bundle after this block,
-          // before --serve.
+          // then drain the sequential chain. The auto-publish below runs
+          // after this block, so run_finished always precedes the bundle
+          // push (frozen contract).
           if (emitter && bridge) {
             await bridge.settle();
             emitter.runFinished(threw || anyFailed ? "failed" : "succeeded");
-            await settleEmitterBounded(emitter);
+            // Fully drain the emitter before publishing — an earlier
+            // bounded drain (15s cap) could return while the queued
+            // run_finished POST was still pending, letting the bundle
+            // upload race ahead of the final event and violate the
+            // frozen ordering contract (run_finished must precede the
+            // bundle push). An unbounded settle() is safe now because
+            // the emitter's circuit breaker bounds the pathological
+            // case: a dead dashboard trips after 3 consecutive ~5s
+            // failures (~15s worst case, the same as the old cap) and
+            // every remaining queued POST short-circuits instantly; a
+            // slow-but-alive dashboard drains at its own pace, which is
+            // acceptable since the very next step is an upload to that
+            // same dashboard.
+            await emitter.settle();
             setRunMetadataObserver(undefined);
             // Clean finish — clear the signal handlers' refs so a signal
             // arriving from here on exits immediately without emitting a
@@ -408,6 +380,32 @@ export function registerRunCommand(program: Command): void {
         }
 
         if (anyFailed) {
+          process.exitCode = 1;
+        }
+
+        // Auto-publish the session bundle to the qa dashboard when the
+        // launcher env asks for it (EVAL_RESULTS_UPLOAD_URL). This runs
+        // only when `benchmark.run` resolved — pass or fail alike, since
+        // failed-run transcripts are exactly what needs inspecting — and
+        // never on the rethrow path (config/dataset errors abort before
+        // meaningful artifacts, and that path already exits non-zero).
+        // With no env vars set, autoPublishSession returns "disabled"
+        // silently and behavior is byte-identical to before.
+        //
+        // Snapshot consistency: the bundle is captured the moment we
+        // get here, so it relies on the runners having fully drained
+        // their fire-and-forget `progress.ndjson` append chains before
+        // resolving. Each runner `await flush()`es its progress
+        // lifecycle at the end of its finally block (see
+        // src/lib/runner/progress-lifecycle.ts) — so `benchmark.run`
+        // resolving implies all progress writes are on disk.
+        const publishResult = await autoPublishSession({ sessionId: session });
+        if (publishResult === "failed") {
+          // A green Job with no uploaded results is worse than a red one —
+          // an upload failure after a completed eval must fail the pod,
+          // while a missing token merely warns (a publishing
+          // misconfiguration shouldn't crash a $20 finished run) and
+          // live-event failures never affect the exit code at all.
           process.exitCode = 1;
         }
 

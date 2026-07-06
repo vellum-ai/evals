@@ -245,7 +245,7 @@ export async function runLongMemEvalV2Unit(
 
   // Shared with `runEvalOnce` — wrapped reporter + 5s heartbeat ticker.
   // `dispose()` in the `finally` below stops the ticker (idempotent).
-  const { progress, dispose } = createRunProgressLifecycle({
+  const { progress, dispose, flush } = createRunProgressLifecycle({
     runId: input.runId,
     userProgress: input.progress,
   });
@@ -486,5 +486,10 @@ export async function runLongMemEvalV2Unit(
     throw err;
   } finally {
     dispose();
+    // Wait for queued `progress.ndjson` appends before resolving —
+    // the auto-publish bundle snapshot in `commands/run.ts` fires as
+    // soon as `benchmark.run` resolves, and a still-pending append
+    // would be missing from the uploaded logs. Never rejects.
+    await flush();
   }
 }

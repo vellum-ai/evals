@@ -34,6 +34,37 @@ mock.module("../create-agent", () => ({
   },
 }));
 
+// Wrap `createRunProgressLifecycle` so tests can observe whether
+// `runEvalOnce`'s finally awaited `lifecycle.flush()`. The wrapper
+// delegates to the REAL implementation (captured in a const before the
+// mock is registered, so the factory can't recurse into itself) and
+// only records the call — every other test in this file runs through
+// it unchanged. Used by the shutdown-rejection regression below: the
+// flush must run even when a cleanup step in the same finally rejects.
+import {
+  createRunProgressLifecycle,
+  DEFAULT_HEARTBEAT_MS,
+  type CreateRunProgressLifecycleInput,
+  type RunProgressLifecycle,
+} from "../progress-lifecycle";
+const realCreateRunProgressLifecycle = createRunProgressLifecycle;
+const lifecycleFlushCalls: string[] = [];
+mock.module("../progress-lifecycle", () => ({
+  DEFAULT_HEARTBEAT_MS,
+  createRunProgressLifecycle: (
+    input: CreateRunProgressLifecycleInput,
+  ): RunProgressLifecycle => {
+    const real = realCreateRunProgressLifecycle(input);
+    return {
+      ...real,
+      flush: (): Promise<void> => {
+        lifecycleFlushCalls.push(input.runId);
+        return real.flush();
+      },
+    };
+  },
+}));
+
 // Import-under-test goes AFTER `mock.module` so `run-once.ts`'s
 // import-time reference to `createAgent` resolves to the stub above.
 import {
@@ -618,6 +649,75 @@ describe("runEvalOnce — construction failure diagnostic gap", () => {
     // skips the write rather than NPE'ing on `runDir`.
     const metadata = await readRunMetadata(runId);
     expect(metadata).toBeUndefined();
+  });
+});
+
+/**
+ * Regression for the Codex P2 on PR #32: `runEvalOnce`'s finally used
+ * to run `await agent.shutdown()` and the metadata reconcile BEFORE
+ * `await lifecycle.flush()` with no nesting — a rejecting shutdown
+ * left the finally early and the flush never ran, so `commands/run.ts`
+ * could auto-publish the session bundle while queued `progress.ndjson`
+ * appends from the failed run were still pending. Post-fix, the
+ * cleanup steps sit in a nested try whose finally owns the flush:
+ *
+ *   - flush() runs even when shutdown rejects (the assertion below);
+ *   - the shutdown rejection still propagates to the caller unchanged
+ *     (flush never rejects, so it can't mask the cleanup error).
+ */
+describe("runEvalOnce — progress flush despite cleanup failures", () => {
+  const endImmediatelySimulator: Simulator = {
+    async decide(): Promise<SimulatorDecision> {
+      return { action: "end", reason: "flush-on-shutdown-failure test" };
+    },
+  };
+
+  afterEach(() => {
+    nextAgent = null;
+  });
+
+  test("lifecycle.flush() still runs when agent.shutdown() rejects, and the rejection propagates", async () => {
+    const runId = `test-shutdown-throw-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    // Agent whose run succeeds end-to-end (the simulator ends the
+    // conversation on turn one, before any send) but whose shutdown —
+    // the first awaited cleanup step in the finally — rejects.
+    nextAgent = {
+      id: runId,
+      conversationKey: `evals:test:${runId}`,
+      async hatch(): Promise<void> {},
+      async send(_message: AgentMessage): Promise<void> {
+        throw new Error("unreachable: simulator ends before any send");
+      },
+      async runSetupCommand(): Promise<void> {
+        throw new Error("unreachable: no setup commands configured");
+      },
+      events(): AsyncIterable<AgentEvent> {
+        return (async function* (): AsyncIterable<AgentEvent> {})();
+      },
+      isTurnComplete(): boolean {
+        return false;
+      },
+      async shutdown(): Promise<void> {
+        throw new Error("simulated shutdown failure");
+      },
+    };
+
+    lifecycleFlushCalls.length = 0;
+    // Current semantics preserved: the cleanup rejection is NOT
+    // swallowed — it surfaces as the run's rejection.
+    await expect(
+      runEvalOnce({
+        profile: fakeProfile("p-fake"),
+        test: fakeTestDef("t-fake"),
+        runId,
+        simulator: endImmediatelySimulator,
+      }),
+    ).rejects.toThrow("simulated shutdown failure");
+
+    // The load-bearing assertion: pre-fix, the rejecting shutdown left
+    // the finally before `await lifecycle.flush()` and this stayed
+    // empty; post-fix the nested finally guarantees the call.
+    expect(lifecycleFlushCalls).toContain(runId);
   });
 });
 

@@ -1,6 +1,4 @@
 /** `evals run` — Cartesian profile × test runner. */
-import { randomBytes } from "crypto";
-
 import type { Command } from "commander";
 
 import {
@@ -15,6 +13,7 @@ import { reapAbandonedEvalContainers } from "../lib/adapters/docker-reaper";
 import { loadBenchmark } from "../lib/benchmark";
 import { DEFAULT_BENCHMARK_ID } from "../lib/catalog";
 import { loadProfile } from "../lib/profile";
+import { resolveSessionId } from "../lib/session-id";
 import { openInBrowser, startReportServer } from "./server";
 
 /**
@@ -32,38 +31,6 @@ function splitCsv(raw: string): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-}
-
-/**
- * Session-id suffix used to disambiguate concurrent evals invocations.
- *
- * Format: `YYYYMMDDhhmmssSSS-XXXX` (17-digit ms-precision timestamp + 4
- * hex chars of randomness). The per-(profile, unit) run id stamping
- * happens inside each benchmark's `run()` module — we only need the
- * session-level suffix here so every execution in this invocation
- * clusters under the same session in the report server.
- */
-function sessionTimestampSuffix(): string {
-  const ms = new Date()
-    .toISOString()
-    .replace(/[^0-9]/g, "")
-    .slice(0, 17);
-  const rand = randomBytes(2).toString("hex");
-  return `${ms}-${rand}`;
-}
-
-function slugifyLabel(label: string): string {
-  const slug = label
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-  return slug.length > 0 ? slug : "";
-}
-
-function sessionId(label: string | undefined, timestamp: string): string {
-  const slug = label ? slugifyLabel(label) : "";
-  return slug ? `session-${timestamp}-${slug}` : `session-${timestamp}`;
 }
 
 export function registerRunCommand(program: Command): void {
@@ -96,6 +63,10 @@ export function registerRunCommand(program: Command): void {
       "--label <label>",
       "Human-readable tag stamped onto every (profile, unit) execution in this run, so they cluster together in the report server",
     )
+    .option(
+      "--session-id <id>",
+      "Explicit session id for this run (defaults to $EVAL_RESULTS_SESSION_ID, then a generated id). Used verbatim for .runs/ grouping, the report server, and export — the eval-pod launcher sets the env var so its run id and the uploaded bundle id coincide.",
+    )
     .option("--max-turns <n>", "Maximum simulator turns per run", (value) =>
       Number(value),
     )
@@ -121,6 +92,7 @@ export function registerRunCommand(program: Command): void {
         tests?: string;
         limit?: number;
         label?: string;
+        sessionId?: string;
         maxTurns?: number;
         quiet?: boolean;
         serve?: boolean;
@@ -230,8 +202,13 @@ export function registerRunCommand(program: Command): void {
 
         // Stamp every execution in this invocation with the same session id
         // so the report server can render them as a single grouped run.
-        const sessionTimestamp = sessionTimestampSuffix();
-        const session = sessionId(opts.label, sessionTimestamp);
+        // The label is stamped on metadata even alongside an explicit id;
+        // it is only woven into *generated* ids.
+        const session = resolveSessionId({
+          explicit: opts.sessionId,
+          env: process.env,
+          label: opts.label,
+        });
         const sessionLabel = opts.label;
 
         // Snapshot argv at the top of the action handler — Commander

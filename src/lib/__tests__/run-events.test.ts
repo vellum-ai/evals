@@ -242,11 +242,35 @@ describe("sequential ordering", () => {
   });
 });
 
+const BREAKER_WARNING =
+  "[run-events] dashboard unreachable after 3 consecutive failures — dropping remaining events";
+
+/**
+ * A fetch stub that walks a script of outcomes ("fail" rejects, "ok"
+ * resolves 200) and counts calls; calls beyond the script reject.
+ */
+function scriptedFetch(script: Array<"fail" | "ok">): {
+  callCount: () => number;
+  fetchImpl: typeof fetch;
+} {
+  let calls = 0;
+  const fetchImpl = ((_url: unknown) => {
+    const outcome = script[calls++] ?? "fail";
+    return outcome === "ok"
+      ? Promise.resolve(new Response(null, { status: 200 }))
+      : Promise.reject(new Error("connection refused"));
+  }) as typeof fetch;
+  return { callCount: () => calls, fetchImpl };
+}
+
 describe("fail-soft behavior", () => {
-  test("rejecting fetch: settle resolves, warns for first 3 failures then suppresses", async () => {
+  // With uninterrupted failures the circuit breaker trips on the 3rd
+  // failure, so the 4th failure (which would print the "suppressed" line)
+  // never happens — the breaker's trip line takes its place. The
+  // "suppressed" line still fires when successes interleave (next test).
+  test("rejecting fetch: settle resolves, warns for first 3 failures then trips the breaker", async () => {
     const warn = spyWarn();
-    const fetchImpl = ((_url: unknown) =>
-      Promise.reject(new Error("connection refused"))) as typeof fetch;
+    const { callCount, fetchImpl } = scriptedFetch([]);
     const emitter = createRunEventEmitter({
       config,
       sessionId: "s1",
@@ -258,6 +282,39 @@ describe("fail-soft behavior", () => {
     }
     await emitter.settle();
 
+    expect(callCount()).toBe(3);
+    expect(warn).toHaveBeenCalledTimes(4);
+    for (let i = 0; i < 3; i++) {
+      expect(warn.mock.calls[i]).toEqual([
+        "[run-events] failed to post execution_started event: connection refused",
+      ]);
+    }
+    expect(warn.mock.calls[3]).toEqual([BREAKER_WARNING]);
+  });
+
+  test("interleaved successes: warning cap suppresses per-event noise without tripping the breaker", async () => {
+    const warn = spyWarn();
+    // fail, fail, ok, fail, fail — 4 total failures (cap + "suppressed"
+    // line) but never 3 consecutive, so every event still hits fetch.
+    const { callCount, fetchImpl } = scriptedFetch([
+      "fail",
+      "fail",
+      "ok",
+      "fail",
+      "fail",
+    ]);
+    const emitter = createRunEventEmitter({
+      config,
+      sessionId: "s1",
+      fetchImpl,
+    });
+
+    for (let i = 0; i < 5; i++) {
+      emitter.executionStarted({ testId: `t-${i}`, profileId: "p-1" });
+    }
+    await emitter.settle();
+
+    expect(callCount()).toBe(5);
     expect(warn).toHaveBeenCalledTimes(4);
     for (let i = 0; i < 3; i++) {
       expect(warn.mock.calls[i]).toEqual([
@@ -324,6 +381,89 @@ describe("fail-soft behavior", () => {
     expect(warn.mock.calls[0]).toEqual([
       "[run-events] failed to post run_started event: HTTP 500",
     ]);
+  });
+});
+
+describe("circuit breaker", () => {
+  test("trips after 3 consecutive failures: later events never call fetch, settle resolves", async () => {
+    const warn = spyWarn();
+    const { callCount, fetchImpl } = scriptedFetch([]);
+    const emitter = createRunEventEmitter({
+      config,
+      sessionId: "s1",
+      fetchImpl,
+    });
+
+    emitter.executionStarted({ testId: "t-1", profileId: "p-1" });
+    emitter.executionStarted({ testId: "t-2", profileId: "p-1" });
+    emitter.executionStarted({ testId: "t-3", profileId: "p-1" });
+    await emitter.settle();
+    expect(callCount()).toBe(3);
+
+    // 4th event onward: short-circuited, no network attempt, no new warns.
+    const warnsAtTrip = warn.mock.calls.length;
+    emitter.executionStarted({ testId: "t-4", profileId: "p-1" });
+    emitter.runFinished("failed");
+    await emitter.settle();
+
+    expect(callCount()).toBe(3);
+    expect(warn).toHaveBeenCalledTimes(warnsAtTrip);
+    const tripLines = warn.mock.calls.filter((c) => c[0] === BREAKER_WARNING);
+    expect(tripLines).toHaveLength(1);
+  });
+
+  test("a success resets the consecutive counter: trips only after the post-success run of 3", async () => {
+    const warn = spyWarn();
+    // fail, fail, ok (reset), fail, fail, fail — breaker trips on event 6.
+    const { callCount, fetchImpl } = scriptedFetch([
+      "fail",
+      "fail",
+      "ok",
+      "fail",
+      "fail",
+      "fail",
+    ]);
+    const emitter = createRunEventEmitter({
+      config,
+      sessionId: "s1",
+      fetchImpl,
+    });
+
+    for (let i = 0; i < 6; i++) {
+      emitter.executionStarted({ testId: `t-${i}`, profileId: "p-1" });
+    }
+    await emitter.settle();
+
+    // All 6 events reached fetch — the pre-success failures did not count
+    // toward the post-success streak.
+    expect(callCount()).toBe(6);
+    expect(
+      warn.mock.calls.filter((c) => c[0] === BREAKER_WARNING),
+    ).toHaveLength(1);
+
+    // Now tripped: a 7th event is dropped without a fetch call.
+    emitter.runFinished("failed");
+    await emitter.settle();
+    expect(callCount()).toBe(6);
+  });
+
+  test("trip warning is logged exactly once even as more events are dropped", async () => {
+    const warn = spyWarn();
+    const { fetchImpl } = scriptedFetch([]);
+    const emitter = createRunEventEmitter({
+      config,
+      sessionId: "s1",
+      fetchImpl,
+    });
+
+    for (let i = 0; i < 10; i++) {
+      emitter.executionStarted({ testId: `t-${i}`, profileId: "p-1" });
+    }
+    await emitter.settle();
+
+    expect(
+      warn.mock.calls.filter((c) => c[0] === BREAKER_WARNING),
+    ).toHaveLength(1);
   });
 });
 

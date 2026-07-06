@@ -126,6 +126,18 @@ export async function run(
   // index format + invalidation rules.
   const trajectoryReader = await openTrajectories(dataRoot);
 
+  // Announce the planned test×profile matrix before anything executes.
+  // `testId` is `item.questionId` — the id the runner stamps into each
+  // unit's RunMetadata — so live-progress consumers can match execution
+  // events to these rows.
+  const planned = profiles.flatMap((profile) =>
+    selected.map((item) => ({
+      testId: item.questionId,
+      profileId: profile.id,
+    })),
+  );
+  input.reportPlanned?.(planned);
+
   let anyFailed = false;
   try {
     // Build the full (profile, item) task list, then fan out across

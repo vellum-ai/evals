@@ -96,6 +96,18 @@ export async function run(
   const seedTicks = resolveTickCount("EVALS_COMPACTION_SEED_TICKS", 20);
   const observeTicks = resolveTickCount("EVALS_COMPACTION_OBSERVE_TICKS", 10);
 
+  // Announce the planned test×profile matrix before anything executes.
+  // `testId` is the scenario id — the id the runner stamps into each
+  // unit's RunMetadata — so live-progress consumers can match execution
+  // events to these rows.
+  const planned = profiles.flatMap((profile) =>
+    scenarioIds.map((scenarioId) => ({
+      testId: scenarioId,
+      profileId: profile.id,
+    })),
+  );
+  input.reportPlanned?.(planned);
+
   let anyFailed = false;
   const tasks = profiles.flatMap((profile) =>
     scenarioIds.map((scenarioId) => {

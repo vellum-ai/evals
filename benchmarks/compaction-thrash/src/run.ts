@@ -99,42 +99,46 @@ export async function run(
   const seedTicks = resolveTickCount("EVALS_COMPACTION_SEED_TICKS", 20);
   const observeTicks = resolveTickCount("EVALS_COMPACTION_OBSERVE_TICKS", 10);
 
-  // Announce the planned test×profile matrix before anything executes.
-  // `testId` is the scenario id — the id the runner stamps into each
-  // unit's RunMetadata — so live-progress consumers can match execution
-  // events to these rows.
-  const planned = profiles.flatMap((profile) =>
-    scenarioIds.map((scenarioId) => ({
+  // One (profile, scenario) cross product drives both the planned-matrix
+  // announcement and the task list. `testId` is the scenario id — the id
+  // the runner stamps into each unit's RunMetadata — so live-progress
+  // consumers can match execution events to planned rows by
+  // (testId, profileId).
+  const pairs = profiles.flatMap((profile) =>
+    scenarioIds.map((scenarioId) => ({ profile, scenarioId })),
+  );
+
+  // Announce the planned matrix before anything executes.
+  await invokeReportPlanned(
+    input,
+    pairs.map(({ profile, scenarioId }) => ({
       testId: scenarioId,
       profileId: profile.id,
     })),
   );
-  await invokeReportPlanned(input, planned);
 
   let anyFailed = false;
-  const tasks = profiles.flatMap((profile) =>
-    scenarioIds.map((scenarioId) => {
-      const id = runId(profile.id, scenarioId, timestampSuffix());
-      return async () => {
-        try {
-          await runCompactionThrashScenario({
-            profile,
-            scenarioId,
-            runId: id,
-            sessionId: session,
-            sessionLabel,
-            cliArgv,
-            progress,
-            seedTicks,
-            observeTicks,
-          });
-        } catch (err) {
-          reportRunFailure(progress, err);
-          throw err;
-        }
-      };
-    }),
-  );
+  const tasks = pairs.map(({ profile, scenarioId }) => {
+    const id = runId(profile.id, scenarioId, timestampSuffix());
+    return async () => {
+      try {
+        await runCompactionThrashScenario({
+          profile,
+          scenarioId,
+          runId: id,
+          sessionId: session,
+          sessionLabel,
+          cliArgv,
+          progress,
+          seedTicks,
+          observeTicks,
+        });
+      } catch (err) {
+        reportRunFailure(progress, err);
+        throw err;
+      }
+    };
+  });
 
   const result = await runWithConcurrency(tasks, input.workers ?? 1);
   anyFailed = result.anyFailed;

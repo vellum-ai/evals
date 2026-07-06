@@ -18,7 +18,7 @@ import { randomBytes } from "crypto";
  * session-level suffix here so every execution in this invocation
  * clusters under the same session in the report server.
  */
-export function sessionTimestampSuffix(): string {
+function sessionTimestampSuffix(): string {
   const ms = new Date()
     .toISOString()
     .replace(/[^0-9]/g, "")
@@ -36,7 +36,7 @@ function slugifyLabel(label: string): string {
   return slug.length > 0 ? slug : "";
 }
 
-export function generateSessionId(
+function generateSessionId(
   label: string | undefined,
   timestamp: string,
 ): string {
@@ -50,9 +50,9 @@ export function generateSessionId(
  * or spaces: letters, digits, hyphen, underscore; must start
  * alphanumeric; max 128 chars.
  */
-export const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
-export function assertValidSessionId(
+function assertValidSessionId(
   id: string,
   source: "--session-id" | "EVAL_RESULTS_SESSION_ID",
 ): void {

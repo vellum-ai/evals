@@ -70,13 +70,12 @@ export async function flushRunFinishedOnSignal(input: {
   const capMs = input.capMs ?? SIGNAL_FLUSH_TIMEOUT_MS;
   const flush = (async () => {
     if (!input.skipRunFinished) input.emitter.runFinished("failed");
-    // Wait (bounded by the race below) for pending execution_completed
-    // builds to enqueue alongside the emitter chain, then drain whatever
-    // the bridge added with a second settle().
-    await Promise.allSettled([
-      input.bridge?.settle() ?? Promise.resolve(),
-      input.emitter.settle(),
-    ]);
+    // Bridge first (bounded by the race below): its settle resolving
+    // means every in-flight execution_completed build has enqueued onto
+    // the emitter chain, so one emitter settle then drains everything.
+    // Neither settle rejects by contract; the catches are defensive (a
+    // bridge failure must not skip the emitter drain).
+    await input.bridge?.settle().catch(() => {});
     await input.emitter.settle();
   })().catch(() => {});
   const cap = new Promise<void>((resolve) => {
@@ -394,19 +393,15 @@ export function registerRunCommand(program: Command): void {
               runFinishedEmitted = true;
               emitter.runFinished(threw || anyFailed ? "failed" : "succeeded");
             }
-            // Fully drain the emitter before publishing — an earlier
-            // bounded drain (15s cap) could return while the queued
-            // run_finished POST was still pending, letting the bundle
-            // upload race ahead of the final event and violate the
-            // frozen ordering contract (run_finished must precede the
-            // bundle push). An unbounded settle() is safe now because
-            // the emitter's circuit breaker bounds the pathological
-            // case: a dead dashboard trips after 3 consecutive ~5s
-            // failures (~15s worst case, the same as the old cap) and
-            // every remaining queued POST short-circuits instantly; a
-            // slow-but-alive dashboard drains at its own pace, which is
-            // acceptable since the very next step is an upload to that
-            // same dashboard.
+            // Fully drain the emitter before publishing so run_finished
+            // always precedes the bundle push (frozen ordering contract).
+            // The unbounded settle() is safe: the emitter's circuit
+            // breaker bounds a dead dashboard (trips after 3 consecutive
+            // ~5s failures, then every remaining queued POST
+            // short-circuits instantly, with run_finished bypassing the
+            // trip for a single bounded attempt), and a slow-but-alive
+            // dashboard draining at its own pace is acceptable since the
+            // very next step is an upload to that same dashboard.
             await emitter.settle();
             setRunMetadataObserver(undefined);
             // Clean finish — clear the signal handlers' refs so a signal

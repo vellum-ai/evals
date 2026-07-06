@@ -131,47 +131,52 @@ export async function run(
 
   let anyFailed = false;
   try {
-    // Announce the planned test×profile matrix before anything executes.
-    // `testId` is `item.questionId` — the id the runner stamps into each
-    // unit's RunMetadata — so live-progress consumers can match execution
-    // events to these rows. (invokeReportPlanned swallows reporter
-    // failures, but this stays inside the try/finally so nothing between
-    // here and the runs can leak the trajectory file handle.)
-    const planned = profiles.flatMap((profile) =>
-      selected.map((item) => ({
+    // One (profile, item) cross product drives both the planned-matrix
+    // announcement and the task list. `testId` is `item.questionId` —
+    // the id the runner stamps into each unit's RunMetadata — so
+    // live-progress consumers can match execution events to planned
+    // rows by (testId, profileId).
+    const pairs = profiles.flatMap((profile) =>
+      selected.map((item) => ({ profile, item })),
+    );
+
+    // Announce the planned matrix before anything executes.
+    // (invokeReportPlanned swallows reporter failures, but this stays
+    // inside the try/finally so nothing between here and the runs can
+    // leak the trajectory file handle.)
+    await invokeReportPlanned(
+      input,
+      pairs.map(({ profile, item }) => ({
         testId: item.questionId,
         profileId: profile.id,
       })),
     );
-    await invokeReportPlanned(input, planned);
 
-    // Build the full (profile, item) task list, then fan out across
-    // `workers` slots. The trajectory reader is concurrency-safe
-    // (positional pread, no shared cursor), and each unit hatches its
-    // own container(s) with a unique runId, so parallel execution is
-    // safe as long as the host has the resources.
-    const tasks = profiles.flatMap((profile) =>
-      selected.map((item) => {
-        const id = runId(profile.id, item.questionId, timestampSuffix());
-        return async () => {
-          try {
-            await runLongMemEvalV2Unit({
-              profile,
-              item,
-              trajectoryReader,
-              runId: id,
-              sessionId: session,
-              sessionLabel,
-              cliArgv,
-              progress,
-            });
-          } catch (err) {
-            reportRunFailure(progress, err);
-            throw err;
-          }
-        };
-      }),
-    );
+    // Fan the task list out across `workers` slots. The trajectory
+    // reader is concurrency-safe (positional pread, no shared cursor),
+    // and each unit hatches its own container(s) with a unique runId,
+    // so parallel execution is safe as long as the host has the
+    // resources.
+    const tasks = pairs.map(({ profile, item }) => {
+      const id = runId(profile.id, item.questionId, timestampSuffix());
+      return async () => {
+        try {
+          await runLongMemEvalV2Unit({
+            profile,
+            item,
+            trajectoryReader,
+            runId: id,
+            sessionId: session,
+            sessionLabel,
+            cliArgv,
+            progress,
+          });
+        } catch (err) {
+          reportRunFailure(progress, err);
+          throw err;
+        }
+      };
+    });
 
     const result = await runWithConcurrency(tasks, input.workers ?? 1);
     anyFailed = result.anyFailed;

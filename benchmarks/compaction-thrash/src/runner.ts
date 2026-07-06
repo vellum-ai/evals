@@ -585,10 +585,8 @@ export async function runCompactionThrashScenario(
     } catch {
       // Best-effort teardown.
     }
-    // Wait for queued `progress.ndjson` appends before resolving —
-    // the auto-publish bundle snapshot in `commands/run.ts` fires as
-    // soon as `benchmark.run` resolves, and a still-pending append
-    // would be missing from the uploaded logs. Never rejects.
+    // Drain queued `progress.ndjson` appends — see `flush()`'s doc
+    // comment in progress-lifecycle.ts.
     await flush();
   }
 }

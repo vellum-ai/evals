@@ -44,27 +44,24 @@
  *     bundle upload (the process exits before auto-publish runs).
  */
 
-/** One planned (test × profile) execution in the run matrix. */
-export interface PlannedExecution {
-  testId: string;
-  profileId: string;
-}
+import type { PlannedExecution } from "./benchmark";
+import { readDashboardEnv, stripTrailingSlashes } from "./dashboard-env";
 
-export interface RunStartedEvent {
+interface RunStartedEvent {
   event: "run_started";
   emittedAt: string;
   benchmark: string;
   planned: PlannedExecution[];
 }
 
-export interface ExecutionStartedEvent {
+interface ExecutionStartedEvent {
   event: "execution_started";
   emittedAt: string;
   testId: string;
   profileId: string;
 }
 
-export interface ExecutionCompletedEvent {
+interface ExecutionCompletedEvent {
   event: "execution_completed";
   emittedAt: string;
   testId: string;
@@ -78,13 +75,13 @@ export interface ExecutionCompletedEvent {
   totalCostUsd?: number;
 }
 
-export interface RunFinishedEvent {
+interface RunFinishedEvent {
   event: "run_finished";
   emittedAt: string;
   status: "succeeded" | "failed";
 }
 
-export type RunEvent =
+type RunEvent =
   | RunStartedEvent
   | ExecutionStartedEvent
   | ExecutionCompletedEvent
@@ -103,10 +100,10 @@ export interface RunEventsConfig {
 export function resolveRunEventsConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): RunEventsConfig | undefined {
-  const baseUrl = env.EVAL_RESULTS_UPLOAD_URL?.trim();
-  const authToken = env.QA_AUTH_TOKEN?.trim();
+  // Policy: both-or-nothing — live events need the URL AND the token.
+  const { baseUrl, authToken } = readDashboardEnv(env);
   if (!baseUrl || !authToken) return undefined;
-  return { baseUrl: baseUrl.replace(/\/+$/, ""), authToken };
+  return { baseUrl: stripTrailingSlashes(baseUrl), authToken };
 }
 
 export interface RunEventEmitter {

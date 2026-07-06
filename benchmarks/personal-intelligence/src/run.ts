@@ -109,14 +109,11 @@ export async function run(
     );
   }
 
-  // One (profile, test) cross product drives both the planned-matrix
-  // announcement and the task list, so live-progress consumers can
-  // match execution events to planned rows by (testId, profileId).
   const pairs = profiles.flatMap((profile) =>
     tests.map((test) => ({ profile, test })),
   );
 
-  // Announce the planned test×profile matrix before anything executes.
+  // Planned-row testId is `test.id` (see invokeReportPlanned's contract).
   await invokeReportPlanned(
     input,
     pairs.map(({ profile, test }) => ({

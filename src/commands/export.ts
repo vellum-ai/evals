@@ -20,6 +20,7 @@ import {
   buildRunBundle,
   isBundleOutput,
   isHttpUrlOut,
+  NoSessionError,
   writeBundleTar,
 } from "../lib/report-bundle";
 import {
@@ -85,7 +86,13 @@ export function registerExportCommand(program: Command): void {
     )
     .action(async (opts: { session: string; out: string }) => {
       if (isHttpUrlOut(opts.out)) {
-        await pushBundleToUrl(opts.session, opts.out);
+        const { runId, viewUrl } = await pushBundleToUrl(
+          opts.session,
+          opts.out,
+        );
+        console.log(
+          `Pushed session ${opts.session} → ${viewUrl} (run id: ${runId})`,
+        );
         return;
       }
 
@@ -100,7 +107,7 @@ export function registerExportCommand(program: Command): void {
 
       const session = await readReportSession(opts.session);
       if (!session) {
-        throw new Error(`No session found for ${opts.session}`);
+        throw new NoSessionError(opts.session);
       }
 
       const records: ExportRecord[] = [

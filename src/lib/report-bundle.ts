@@ -133,9 +133,9 @@ const renderStatic = (input: Parameters<typeof renderReportPage>[0]): string =>
   rewriteReportLinks(renderReportPage(input, { readOnly: true }));
 
 /**
- * Thrown by `buildRunBundle` when the session has no runs on disk (e.g.
- * every execution failed before producing artifacts). Typed so callers can
- * distinguish "nothing to bundle" from a real bundling/upload failure.
+ * Thrown when a requested session has no runs on disk (e.g. every
+ * execution failed before producing artifacts). Typed so callers can
+ * distinguish "no such session" from a real bundling/upload failure.
  */
 export class NoSessionError extends Error {
   constructor(sessionId: string) {

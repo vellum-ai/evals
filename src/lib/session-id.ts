@@ -33,7 +33,7 @@ function slugifyLabel(label: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
-  return slug.length > 0 ? slug : "";
+  return slug;
 }
 
 function generateSessionId(

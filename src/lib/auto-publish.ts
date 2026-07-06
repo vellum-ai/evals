@@ -35,7 +35,7 @@ export async function autoPublishSession(input: {
 
   // Policy: the URL alone activates publishing; a missing token is a
   // loud misconfiguration warning rather than a silent no-op.
-  const { baseUrl, authToken } = readDashboardEnv(input.env ?? process.env);
+  const { baseUrl, authToken } = readDashboardEnv(input.env);
   if (!baseUrl) return "disabled";
 
   if (!authToken) {

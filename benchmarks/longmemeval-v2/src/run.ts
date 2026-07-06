@@ -131,19 +131,14 @@ export async function run(
 
   let anyFailed = false;
   try {
-    // One (profile, item) cross product drives both the planned-matrix
-    // announcement and the task list. `testId` is `item.questionId` —
-    // the id the runner stamps into each unit's RunMetadata — so
-    // live-progress consumers can match execution events to planned
-    // rows by (testId, profileId).
     const pairs = profiles.flatMap((profile) =>
       selected.map((item) => ({ profile, item })),
     );
 
-    // Announce the planned matrix before anything executes.
-    // (invokeReportPlanned swallows reporter failures, but this stays
-    // inside the try/finally so nothing between here and the runs can
-    // leak the trajectory file handle.)
+    // Planned-row testId is `item.questionId` (see invokeReportPlanned's
+    // contract). invokeReportPlanned swallows reporter failures, but this
+    // stays inside the try/finally so nothing between here and the runs
+    // can leak the trajectory file handle.
     await invokeReportPlanned(
       input,
       pairs.map(({ profile, item }) => ({

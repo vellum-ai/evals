@@ -7,6 +7,7 @@ import {
   writeMetricResults,
   writeRunMetadata,
 } from "../metrics";
+import { hangingFetch } from "./helpers";
 
 /** Seeds a minimal on-disk session (one run) so `buildRunBundle` succeeds. */
 async function seedSession(): Promise<string> {
@@ -135,31 +136,12 @@ describe("pushBundleToUrl", () => {
     // its abort signal
     const sessionId = await seedSession();
     const timeoutMs = 5;
-    const seenSignals: Array<AbortSignal | null | undefined> = [];
-    const hangingFetch = ((
-      _input: string | URL | Request,
-      init?: RequestInit,
-    ) =>
-      new Promise<Response>((_resolve, reject) => {
-        seenSignals.push(init?.signal);
-        // The timer behind AbortSignal.timeout() is unref'd, so if this
-        // pending promise were the only work, Bun could exit the event loop
-        // without ever firing it. A real (ref'd) setTimeout keeps the loop
-        // alive long enough for the abort to fire, and doubles as a fallback
-        // rejection so the test can never hang.
-        const fallback = setTimeout(() => {
-          reject(new Error("fake fetch: abort never fired"));
-        }, timeoutMs + 200);
-        init?.signal?.addEventListener("abort", () => {
-          clearTimeout(fallback);
-          reject(init.signal?.reason ?? new Error("aborted"));
-        });
-      })) as typeof fetch;
+    const { seenSignals, fetchImpl } = hangingFetch(timeoutMs);
 
     // WHEN/THEN the push is aborted by its timeout instead of hanging
     const rejection = await pushBundleToUrl(sessionId, "https://qa.vellum.ai", {
       authToken: "tok-123",
-      fetchImpl: hangingFetch,
+      fetchImpl,
       timeoutMs,
     }).then(
       () => undefined,

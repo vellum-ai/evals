@@ -14,7 +14,8 @@ import { buildBundleBuffer, buildRunBundle } from "./report-bundle";
  * `QA_AUTH_TOKEN` env var, as a Bearer token.
  *
  * Returns the server-assigned run id and the URL where the pushed run is
- * viewable.
+ * viewable. Logs bundling progress but not success — each caller owns its
+ * one success line, so a flow never prints the view URL twice.
  *
  * The upload is bounded by `opts.timeoutMs` (default 2 minutes — bundles can
  * be large) so a hung endpoint fails the push instead of stalling forever.
@@ -67,7 +68,5 @@ export async function pushBundleToUrl(
   const result = (await response.json()) as { id?: string; sessionId?: string };
   const runId = result.id ?? result.sessionId ?? sessionId;
   const viewUrl = `${base}/evals/runs/${runId}`;
-  console.log(`Pushed session ${sessionId} → ${outUrl} (run id: ${runId})`);
-  console.log(`View at: ${viewUrl}`);
   return { runId, viewUrl };
 }

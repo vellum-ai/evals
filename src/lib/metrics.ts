@@ -297,13 +297,56 @@ export async function readRunMetadata(
   );
 }
 
+/**
+ * Observer invoked after every successful run.json write. See
+ * {@link setRunMetadataObserver}.
+ */
+export type RunMetadataObserver = (metadata: RunMetadata) => void;
+
+let runMetadataObserver: RunMetadataObserver | undefined;
+
+/**
+ * Register (or clear, with `undefined`) a process-wide observer that fires
+ * after every successful run-metadata write.
+ *
+ * This is the shared finalization seam all three benchmark runners funnel
+ * through (`src/lib/runner/run-once.ts`, `benchmarks/longmemeval-v2/src/runner.ts`,
+ * `benchmarks/compaction-thrash/src/runner.ts`): every per-execution status
+ * transition (`running` → `completed`/`failed`/…) lands here via
+ * `writeRunMetadata`/`updateRunMetadata`. The observer is how `evals run`
+ * mirrors execution lifecycle to the qa dashboard without bespoke
+ * per-benchmark wiring.
+ *
+ * Observers must be synchronous-and-cheap; do any async work
+ * fire-and-forget on your own. A throwing observer never breaks a metadata
+ * write — exceptions are swallowed silently (the observer owns its own
+ * logging). Skipped conditional updates (an `updateRunMetadata` updater
+ * returning `undefined`) do not notify.
+ */
+export function setRunMetadataObserver(
+  observer: RunMetadataObserver | undefined,
+): void {
+  runMetadataObserver = observer;
+}
+
+function notifyRunMetadataObserver(metadata: RunMetadata): void {
+  if (!runMetadataObserver) return;
+  try {
+    runMetadataObserver(metadata);
+  } catch {
+    // A throwing observer must never break a metadata write; it owns
+    // its own logging.
+  }
+}
+
 export async function writeRunMetadata(
   runId: string,
   metadata: RunMetadata,
 ): Promise<void> {
-  await withMetadataLock(runId, () =>
-    writeJson(runArtifacts(runId).metadataPath, metadata),
-  );
+  await withMetadataLock(runId, async () => {
+    await writeJson(runArtifacts(runId).metadataPath, metadata);
+    notifyRunMetadataObserver(metadata);
+  });
 }
 
 /**
@@ -332,6 +375,7 @@ export async function updateRunMetadata(
     const next = await updater(current);
     if (next === undefined) return current;
     await writeJson(runArtifacts(runId).metadataPath, next);
+    notifyRunMetadataObserver(next);
     return next;
   });
 }

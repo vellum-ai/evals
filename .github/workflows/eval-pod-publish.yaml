@@ -250,11 +250,11 @@ jobs:
   publish-catalog:
     # check-for-new-commits is in `needs` for its refresh_only output;
     # build-and-push guarantees an image was actually pushed first — a
-    # catalog must never describe an image that failed to publish. Gating on
-    # `result == 'success'` also skips this job when the idle gate cancels
-    # the run (build-and-push is then skipped, not successful).
+    # catalog must never describe an image that failed to publish. Default
+    # `needs` semantics do the gating: this job runs only if build-and-push
+    # succeeded, and is skipped if it failed, was cancelled, or was skipped
+    # (e.g. when the idle gate cancels the run).
     needs: [check-for-new-commits, build-and-push]
-    if: ${{ needs.build-and-push.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Required: the WIF principal is bound to subject
@@ -299,20 +299,21 @@ jobs:
           # build pushes the immutable :<sha> tag and moves `latest` to it, so
           # the pinned sha catalog doubles as latest.json; a refresh_only
           # build pushes ONLY the floating `latest` image and leaves :<sha>
-          # untouched, so its latest.json must carry imageTag=latest — hence
-          # the second script run below. The script is cheap and pure aside
-          # from `generatedAt`; the two outputs differ only in `imageTag`.
+          # untouched, so its latest.json must carry imageTag=latest — derived
+          # below with jq from catalog-sha.json, so "same content, different
+          # tag" is true by construction (only `imageTag` differs; no second
+          # filesystem scan, no divergent `generatedAt`).
           bun install
           IMAGE_TAG="$GIT_SHA" bun scripts/generate-catalog.ts > catalog-sha.json
           # Guard against an empty/garbage artifact reaching the bucket. Only
-          # catalog-sha.json needs checking: the latest variant below is the
-          # same script over the same checkout, differing only in imageTag.
+          # catalog-sha.json needs checking: the latest variant below is
+          # jq-derived from it, differing only in imageTag.
           bun -e 'const c = await Bun.file("catalog-sha.json").json();
             if (!Array.isArray(c.benchmarks) || c.benchmarks.length === 0) throw new Error("catalog has no benchmarks");
             if (!Array.isArray(c.profiles) || c.profiles.length === 0) throw new Error("catalog has no profiles");'
           cat catalog-sha.json
           if [ "$REFRESH_ONLY" = "true" ]; then
-            IMAGE_TAG="latest" bun scripts/generate-catalog.ts > catalog-latest.json
+            jq '.imageTag = "latest"' catalog-sha.json > catalog-latest.json
           fi
 
       - name: Upload eval catalog to GCS

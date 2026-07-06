@@ -54,6 +54,24 @@ describe("resolveSessionId", () => {
     );
   });
 
+  test("empty explicit id throws instead of falling back", () => {
+    expect(() =>
+      resolveSessionId({
+        explicit: "",
+        env: { EVAL_RESULTS_SESSION_ID: "env-id" },
+      }),
+    ).toThrow(/--session-id/);
+  });
+
+  test("whitespace-only explicit id throws instead of falling back", () => {
+    expect(() =>
+      resolveSessionId({
+        explicit: "   ",
+        env: { EVAL_RESULTS_SESSION_ID: "env-id" },
+      }),
+    ).toThrow(/--session-id/);
+  });
+
   test("invalid env id names the env var", () => {
     expect(() =>
       resolveSessionId({ env: { EVAL_RESULTS_SESSION_ID: "a/b" } }),

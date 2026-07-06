@@ -64,23 +64,30 @@ export function assertValidSessionId(
 }
 
 /**
- * Resolve the session id for a run: explicit `--session-id` wins, then
- * `$EVAL_RESULTS_SESSION_ID`, then a generated `session-<ts>[-<slug>]`
- * id. Explicit/env ids are validated and used verbatim — the label is
- * never woven into them (it still lands on run metadata separately).
+ * Resolve the session id for a run: explicit `--session-id` wins (and,
+ * when present, must be valid — a blank value is an error, not a
+ * fallthrough), then `$EVAL_RESULTS_SESSION_ID`, then a generated
+ * `session-<ts>[-<slug>]` id. Explicit/env ids are validated and used
+ * verbatim — the label is never woven into them (it still lands on run
+ * metadata separately).
  */
 export function resolveSessionId(input: {
   explicit?: string;
   env?: NodeJS.ProcessEnv;
   label?: string;
 }): string {
-  const explicit = input.explicit?.trim();
-  if (explicit) {
+  // An explicitly passed --session-id is authoritative: a blank or
+  // whitespace-only value is rejected rather than silently falling back
+  // to the env var or a generated id (e.g. `--session-id "$RUN_ID"` with
+  // an empty RUN_ID must fail loudly, not run under a different session).
+  if (input.explicit !== undefined) {
+    const explicit = input.explicit.trim();
     assertValidSessionId(explicit, "--session-id");
     return explicit;
   }
 
-  // A whitespace-only env value is treated as unset.
+  // Unlike the explicit flag, env vars are ambient: a whitespace-only
+  // env value is treated as unset and falls through to a generated id.
   const fromEnv = input.env?.EVAL_RESULTS_SESSION_ID?.trim();
   if (fromEnv) {
     assertValidSessionId(fromEnv, "EVAL_RESULTS_SESSION_ID");

@@ -797,48 +797,60 @@ export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
     throw err;
   } finally {
     lifecycle.dispose();
-    // Skip the shutdown lifecycle when construction threw before agent
-    // assignment — there's nothing to retire and emitting fake shutdown
-    // events would muddy the timeline.
-    if (agent) {
-      progress({
-        step: "shutdown",
-        status: "start",
-        message: "Shutting down assistant",
-        detail: agent.id,
-      });
-      await agent.shutdown();
-      progress({
-        step: "shutdown",
-        status: "done",
-        message: "Assistant shut down",
-        detail: agent.id,
-      });
-    }
-    // Verify the run didn't somehow exit "running" by accident. Only
-    // makes sense once artifacts existed long enough for the initial
-    // "running" write to land — pre-artifact throws never wrote any
-    // metadata to begin with, so there's nothing to reconcile.
-    if (runDir) {
-      const finalMetadata = await readRunMetadata(input.runId);
-      if (finalMetadata?.status === "running") {
-        await writeRunMetadata(input.runId, {
-          ...finalMetadata,
-          status: "failed",
-          completedAt: new Date().toISOString(),
-          error:
-            "Run exited without final status — this should never happen; please file a bug.",
+    // The cleanup steps below can themselves reject (`agent.shutdown()`
+    // tearing down containers, the metadata reconcile hitting a disk
+    // error). A rejection here must still propagate to the caller
+    // exactly as before — but it must NOT be allowed to skip the
+    // progress flush, so the cleanup is wrapped in a nested try whose
+    // finally owns the flush. Codex caught the pre-nesting shape on
+    // PR #32: a rejecting shutdown left the finally before `flush()`,
+    // and `commands/run.ts` could auto-publish the bundle while queued
+    // `progress.ndjson` appends from the failed run were still pending.
+    try {
+      // Skip the shutdown lifecycle when construction threw before agent
+      // assignment — there's nothing to retire and emitting fake shutdown
+      // events would muddy the timeline.
+      if (agent) {
+        progress({
+          step: "shutdown",
+          status: "start",
+          message: "Shutting down assistant",
+          detail: agent.id,
+        });
+        await agent.shutdown();
+        progress({
+          step: "shutdown",
+          status: "done",
+          message: "Assistant shut down",
+          detail: agent.id,
         });
       }
+      // Verify the run didn't somehow exit "running" by accident. Only
+      // makes sense once artifacts existed long enough for the initial
+      // "running" write to land — pre-artifact throws never wrote any
+      // metadata to begin with, so there's nothing to reconcile.
+      if (runDir) {
+        const finalMetadata = await readRunMetadata(input.runId);
+        if (finalMetadata?.status === "running") {
+          await writeRunMetadata(input.runId, {
+            ...finalMetadata,
+            status: "failed",
+            completedAt: new Date().toISOString(),
+            error:
+              "Run exited without final status — this should never happen; please file a bug.",
+          });
+        }
+      }
+    } finally {
+      // Always last, even when shutdown/reconcile rejected above: wait
+      // for every queued `progress.ndjson` append to land on disk.
+      // `commands/run.ts` snapshots + uploads the results bundle as
+      // soon as `benchmark.run` resolves, so a still-pending append
+      // here would be missing from the published dashboard logs even
+      // though the local file finishes moments later. `flush()` never
+      // rejects (the chain swallows append failures), so this can't
+      // mask a re-thrown run error or an in-flight cleanup rejection.
+      await lifecycle.flush();
     }
-    // Last thing in the finally, after the shutdown progress events
-    // above: wait for every queued `progress.ndjson` append to land on
-    // disk. `commands/run.ts` snapshots + uploads the results bundle
-    // as soon as `benchmark.run` resolves, so a still-pending append
-    // here would be missing from the published dashboard logs even
-    // though the local file finishes moments later. `flush()` never
-    // rejects (the chain swallows append failures), so this can't mask
-    // a re-thrown run error.
-    await lifecycle.flush();
   }
 }

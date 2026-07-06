@@ -320,7 +320,8 @@ let runMetadataObserver: RunMetadataObserver | undefined;
  * Observers must be synchronous-and-cheap; do any async work
  * fire-and-forget on your own. A throwing observer never breaks a metadata
  * write — exceptions are swallowed silently (the observer owns its own
- * logging). Skipped conditional updates (an `updateRunMetadata` updater
+ * logging), and a rejected promise from an async observer is swallowed the
+ * same way. Skipped conditional updates (an `updateRunMetadata` updater
  * returning `undefined`) do not notify.
  */
 export function setRunMetadataObserver(
@@ -332,7 +333,10 @@ export function setRunMetadataObserver(
 function notifyRunMetadataObserver(metadata: RunMetadata): void {
   if (!runMetadataObserver) return;
   try {
-    runMetadataObserver(metadata);
+    const result = runMetadataObserver(metadata) as unknown;
+    // An async observer sneaks past the void-returning type; swallow its
+    // rejection too so it can't become an unhandled rejection.
+    if (result instanceof Promise) result.catch(() => undefined);
   } catch {
     // A throwing observer must never break a metadata write; it owns
     // its own logging.
@@ -630,6 +634,10 @@ export async function scavengeAbandonedRuns(
  *
  * Uses `*Sync` FS APIs because the caller (`commands/run.ts` signal handler)
  * needs to complete before `process.exit` flushes the loop.
+ *
+ * Intentionally does NOT notify the run-metadata observer: this sync path
+ * runs as the process exits, and downstream consumers deliberately ignore
+ * `abandoned` runs.
  */
 export function abandonAllRunningRunsSync(input: {
   signal: NodeJS.Signals | "exit";

@@ -89,6 +89,38 @@ describe("run-metadata observer", () => {
     expect((await readRunMetadata(runId))?.status).toBe("failed");
   });
 
+  test("an async observer that rejects neither prevents the write nor leaks an unhandled rejection", async () => {
+    const { runId, metadata } = await freshRun();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      // TypeScript happily assigns an async function to the void-returning
+      // observer type; its rejection must be swallowed too.
+      setRunMetadataObserver(async () => {
+        throw new Error("async observer boom");
+      });
+
+      await writeRunMetadata(runId, metadata);
+      expect((await readRunMetadata(runId))?.status).toBe("running");
+
+      const updated = await updateRunMetadata(runId, (current) =>
+        current ? { ...current, status: "completed" } : undefined,
+      );
+      expect(updated?.status).toBe("completed");
+      expect((await readRunMetadata(runId))?.status).toBe("completed");
+
+      // Give the microtask queue (and a macrotask) a tick so any unhandled
+      // rejection would have surfaced.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   test("with no observer set, writes behave as before", async () => {
     const { runId, metadata } = await freshRun();
 

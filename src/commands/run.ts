@@ -42,6 +42,46 @@ const SIGNAL_EXIT_CODES: Record<"SIGINT" | "SIGTERM", number> = {
 const SIGNAL_FLUSH_TIMEOUT_MS = 2000;
 
 /**
+ * Upper bound on the normal-path final drain of live events. The emitter's
+ * consecutive-failure circuit breaker already makes a dead dashboard drain
+ * near-instantly; this generous cap is defense-in-depth against a dashboard
+ * that is slow-but-not-failing, so completion/publish/serve is never held
+ * up indefinitely by best-effort events.
+ */
+const NORMAL_FLUSH_TIMEOUT_MS = 15_000;
+
+/**
+ * Bounded drain of the emitter chain for the normal exit path. When the
+ * cap fires we warn and move on rather than hold up the rest of the run
+ * teardown (the emitter's settle() never rejects; wrapped defensively
+ * anyway). Exported for tests only.
+ */
+export async function settleEmitterBounded(
+  emitter: RunEventEmitter,
+  capMs: number = NORMAL_FLUSH_TIMEOUT_MS,
+): Promise<void> {
+  let drained = false;
+  const flush = emitter
+    .settle()
+    .then(() => {
+      drained = true;
+    })
+    .catch(() => {});
+  const cap = new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, capMs);
+    // Don't let the cap timer itself keep the event loop alive once the
+    // flush has won the race.
+    timer.unref?.();
+  });
+  await Promise.race([flush, cap]);
+  if (!drained) {
+    console.warn(
+      `[run-events] final event flush still pending after ${capMs}ms — continuing without it`,
+    );
+  }
+}
+
+/**
  * Bounded, best-effort flush of live run events for the signal path:
  * enqueue a failed `run_finished`, then wait for the emitter chain (and
  * any execution_completed builds the bridge has in flight) to settle —
@@ -349,13 +389,15 @@ export function registerRunCommand(program: Command): void {
           // execution_completed builds enqueue onto the emitter chain
           // asynchronously, so first `await bridge.settle()` (all
           // execution_completed enqueued), THEN enqueue run_finished,
-          // then `await emitter.settle()` to drain the sequential chain.
+          // then drain the sequential chain — bounded by
+          // NORMAL_FLUSH_TIMEOUT_MS as defense-in-depth (the emitter's
+          // circuit breaker already short-circuits a dead dashboard).
           // A later PR auto-publishes the report bundle after this block,
           // before --serve.
           if (emitter && bridge) {
             await bridge.settle();
             emitter.runFinished(threw || anyFailed ? "failed" : "succeeded");
-            await emitter.settle();
+            await settleEmitterBounded(emitter);
             setRunMetadataObserver(undefined);
             // Clean finish — clear the signal handlers' refs so a signal
             // arriving from here on exits immediately without emitting a

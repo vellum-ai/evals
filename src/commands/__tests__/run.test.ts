@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import type { RunEventEmitter } from "../../lib/run-events";
-import { flushRunFinishedOnSignal } from "../run";
+import { flushRunFinishedOnSignal, settleEmitterBounded } from "../run";
 
 /**
  * A stub emitter whose settle() resolves via the given factory. Records
@@ -93,5 +93,56 @@ describe("flushRunFinishedOnSignal", () => {
     await expect(
       flushRunFinishedOnSignal({ emitter, bridge, capMs: 25 }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("settleEmitterBounded", () => {
+  const warnSpies: Array<ReturnType<typeof spyOn>> = [];
+
+  afterEach(() => {
+    for (const spy of warnSpies.splice(0)) spy.mockRestore();
+  });
+
+  function spyWarn() {
+    const spy = spyOn(console, "warn").mockImplementation(() => {});
+    warnSpies.push(spy);
+    return spy;
+  }
+
+  test("resolves without warning when the emitter drains within the cap", async () => {
+    const warn = spyWarn();
+    const { emitter } = stubEmitter({ settle: () => Promise.resolve() });
+
+    await settleEmitterBounded(emitter, 5000);
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test("is bounded: warns and resolves when the emitter never drains", async () => {
+    const warn = spyWarn();
+    const { emitter } = stubEmitter({
+      // Simulates a slow-but-not-failing dashboard: the chain never drains.
+      settle: () => new Promise<void>(() => {}),
+    });
+
+    const started = Date.now();
+    await settleEmitterBounded(emitter, 25);
+    const elapsed = Date.now() - started;
+
+    // Must be capped, not hang: generous upper bound for CI jitter.
+    expect(elapsed).toBeLessThan(2000);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toBe(
+      "[run-events] final event flush still pending after 25ms — continuing without it",
+    );
+  });
+
+  test("never rejects, even if settle rejects", async () => {
+    spyWarn();
+    const { emitter } = stubEmitter({
+      settle: () => Promise.reject(new Error("settle blew up")),
+    });
+
+    await expect(settleEmitterBounded(emitter, 25)).resolves.toBeUndefined();
   });
 });

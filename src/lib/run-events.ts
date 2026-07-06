@@ -22,6 +22,9 @@
  * fail (or slow down unboundedly) an eval run. Every POST is appended to a
  * sequential promise chain so events arrive in emission order without
  * piling up concurrent sockets; failures are logged (capped) and swallowed.
+ * A consecutive-failure circuit breaker keeps the chain bounded against a
+ * dead dashboard: once it trips, remaining posts short-circuit instantly,
+ * so settle() drains in microseconds instead of ~timeout-per-event.
  */
 
 /** One planned (test × profile) execution in the run matrix. */
@@ -111,6 +114,14 @@ export interface RunEventEmitter {
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const MAX_FAILURE_WARNINGS = 3;
+/**
+ * Circuit breaker: after this many CONSECUTIVE post failures the dashboard
+ * is treated as unreachable and every remaining post short-circuits without
+ * touching the network (a success before the threshold resets the streak).
+ * Aligned with MAX_FAILURE_WARNINGS so the trip line lands right after the
+ * last per-event warning.
+ */
+const BREAKER_CONSECUTIVE_FAILURES = 3;
 
 export function createRunEventEmitter(input: {
   config: RunEventsConfig;
@@ -124,6 +135,8 @@ export function createRunEventEmitter(input: {
 
   let chain: Promise<void> = Promise.resolve();
   let failureCount = 0;
+  let consecutiveFailures = 0;
+  let breakerTripped = false;
 
   const warnFailure = (event: string, reason: unknown): void => {
     failureCount += 1;
@@ -135,7 +148,31 @@ export function createRunEventEmitter(input: {
     }
   };
 
+  // Warning-cap interaction: `failureCount` (per-event warnings + one
+  // "suppressed" line) counts TOTAL failures across the run, while the
+  // breaker counts CONSECUTIVE failures. When the dashboard is dead from
+  // the start the breaker trips on the 3rd failure and no 4th failure ever
+  // happens, so the trip line effectively replaces the "suppressed" line.
+  // When successes interleave, both lines can appear — that's intentional:
+  // the cap silences per-event noise, the trip line announces the drop.
+  const noteFailure = (event: string, reason: unknown): void => {
+    warnFailure(event, reason);
+    consecutiveFailures += 1;
+    if (
+      !breakerTripped &&
+      consecutiveFailures >= BREAKER_CONSECUTIVE_FAILURES
+    ) {
+      breakerTripped = true;
+      console.warn(
+        `[run-events] dashboard unreachable after ${BREAKER_CONSECUTIVE_FAILURES} consecutive failures — dropping remaining events`,
+      );
+    }
+  };
+
   const post = async (payload: RunEvent): Promise<void> => {
+    // Breaker tripped: the dashboard is considered dead — drop the event
+    // without a network round-trip so the chain (and settle()) stays fast.
+    if (breakerTripped) return;
     try {
       const response = await fetchImpl(url, {
         method: "POST",
@@ -146,9 +183,13 @@ export function createRunEventEmitter(input: {
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(timeoutMs),
       });
-      if (!response.ok) warnFailure(payload.event, `HTTP ${response.status}`);
+      if (response.ok) {
+        consecutiveFailures = 0;
+      } else {
+        noteFailure(payload.event, `HTTP ${response.status}`);
+      }
     } catch (error) {
-      warnFailure(payload.event, error);
+      noteFailure(payload.event, error);
     }
   };
 

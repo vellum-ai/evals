@@ -14,7 +14,7 @@ export const LONGMEMEVAL_HF_REPO = "xiaowu0162/longmemeval-v2";
 
 const INSTALL_HINT = 'Install it with: pip install -U "huggingface_hub[cli]"';
 
-async function existsFile(path: string): Promise<boolean> {
+export async function existsFile(path: string): Promise<boolean> {
   try {
     await stat(path);
     return true;

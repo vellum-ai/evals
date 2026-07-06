@@ -2,6 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import { autoPublishSession } from "../auto-publish";
 import type { pushBundleToUrl } from "../bundle-push";
+import { NoSessionError } from "../report-bundle";
 
 type PushCall = {
   sessionId: string;
@@ -177,5 +178,33 @@ describe("autoPublishSession", () => {
     expect(message).toContain(
       "Upload failed (503 Service Unavailable): try later",
     );
+  });
+
+  test("session with no runs on disk → 'failed' with a distinct nothing-to-publish message", async () => {
+    // GIVEN a push that finds no session on disk (every execution failed
+    // before producing artifacts, so no run.json exists)
+    const error = spyConsole("error");
+    const { push } = recordingPush({
+      rejectWith: new NoSessionError("sess-6"),
+    });
+
+    // WHEN we auto-publish
+    const result = await autoPublishSession({
+      sessionId: "sess-6",
+      env: {
+        EVAL_RESULTS_UPLOAD_URL: "https://qa.example.com",
+        QA_AUTH_TOKEN: "tok-123",
+      },
+      push,
+    });
+
+    // THEN it still counts as failed (exit code 1), but the message says
+    // nothing was recorded rather than implying an upload/infra failure
+    expect(result).toBe("failed");
+    expect(error).toHaveBeenCalledTimes(1);
+    const message = String(error.mock.calls[0]?.[0]);
+    expect(message).toContain("nothing to publish for session sess-6");
+    expect(message).toContain("no runs were recorded on disk");
+    expect(message).not.toContain("bundle publish failed");
   });
 });

@@ -8,6 +8,7 @@
  * as a status the caller can map to an exit-code policy.
  */
 import { pushBundleToUrl } from "./bundle-push";
+import { NoSessionError } from "./report-bundle";
 
 export type AutoPublishResult =
   | "disabled"
@@ -53,6 +54,16 @@ export async function autoPublishSession(input: {
     await push(input.sessionId, baseUrl, { authToken });
     return "published";
   } catch (error) {
+    if (error instanceof NoSessionError) {
+      // A session that should have produced runs but has none on disk is a
+      // failure state, but not an upload failure — say so plainly instead
+      // of the generic publish-failed message.
+      console.error(
+        `[evals] nothing to publish for session ${input.sessionId} — no runs ` +
+          "were recorded on disk (all executions failed before producing artifacts)",
+      );
+      return "failed";
+    }
     const message = error instanceof Error ? error.message : String(error);
     console.error(
       `[evals] bundle publish failed for session ${input.sessionId}: ${message}`,

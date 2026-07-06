@@ -85,7 +85,11 @@ overhead), and **egress to `huggingface.co` and its CDN hosts**
 own network context, outside the recording jail that wraps species traffic.
 Retries are safe: `huggingface-cli` hash-skips files already downloaded and
 the relabel step is idempotent. The dataset is public, so no Hugging Face
-token or new secret is required.
+token or new secret is required. When pre-staging the dataset via
+`EVALS_LONGMEMEVAL_DATA_ROOT`, the mount SHOULD be writable: even with the
+data fully present, the harness runs an idempotent relabel self-heal at run
+start that writes into the dataRoot. On a read-only mount the self-heal
+relabel is skipped with a warning and the loader validates the data as-is.
 
 ## Smoke test without a full run
 

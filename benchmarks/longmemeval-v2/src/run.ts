@@ -28,7 +28,10 @@ import type {
   BenchmarkRunInput,
   BenchmarkRunResult,
 } from "../../../src/lib/benchmark";
-import { applyUnitLimit } from "../../../src/lib/benchmark";
+import {
+  applyUnitLimit,
+  invokeReportPlanned,
+} from "../../../src/lib/benchmark";
 import { getBenchmarksDir } from "../../../src/lib/catalog";
 import type { EvalProgressReporter } from "../../../src/lib/runner/progress";
 import { wasErrorReportedToProgress } from "../../../src/lib/runner/run-once";
@@ -131,15 +134,16 @@ export async function run(
     // Announce the planned test×profile matrix before anything executes.
     // `testId` is `item.questionId` — the id the runner stamps into each
     // unit's RunMetadata — so live-progress consumers can match execution
-    // events to these rows. This lives inside the try/finally so a
-    // throwing reporter can't leak the trajectory file handle.
+    // events to these rows. (invokeReportPlanned swallows reporter
+    // failures, but this stays inside the try/finally so nothing between
+    // here and the runs can leak the trajectory file handle.)
     const planned = profiles.flatMap((profile) =>
       selected.map((item) => ({
         testId: item.questionId,
         profileId: profile.id,
       })),
     );
-    await input.reportPlanned?.(planned);
+    await invokeReportPlanned(input, planned);
 
     // Build the full (profile, item) task list, then fan out across
     // `workers` slots. The trajectory reader is concurrency-safe

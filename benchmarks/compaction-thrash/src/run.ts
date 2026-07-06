@@ -21,7 +21,10 @@ import type {
   BenchmarkRunInput,
   BenchmarkRunResult,
 } from "../../../src/lib/benchmark.js";
-import { applyUnitLimit } from "../../../src/lib/benchmark.js";
+import {
+  applyUnitLimit,
+  invokeReportPlanned,
+} from "../../../src/lib/benchmark.js";
 import { listBenchmarkUnitIds } from "../../../src/lib/catalog.js";
 import type { EvalProgressReporter } from "../../../src/lib/runner/progress.js";
 import { wasErrorReportedToProgress } from "../../../src/lib/runner/run-once.js";
@@ -106,7 +109,7 @@ export async function run(
       profileId: profile.id,
     })),
   );
-  await input.reportPlanned?.(planned);
+  await invokeReportPlanned(input, planned);
 
   let anyFailed = false;
   const tasks = profiles.flatMap((profile) =>

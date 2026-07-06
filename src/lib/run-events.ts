@@ -25,6 +25,23 @@
  * A consecutive-failure circuit breaker keeps the chain bounded against a
  * dead dashboard: once it trips, remaining posts short-circuit instantly,
  * so settle() drains in microseconds instead of ~timeout-per-event.
+ *
+ * `run_finished` BYPASSES the tripped breaker: it is the one event the
+ * dashboard needs to close the run's live view, so a transient blip that
+ * trips the breaker mid-run must not leave the dashboard permanently "in
+ * progress" after the endpoint recovers. A tripped breaker still drops
+ * every other event, but a run_finished payload always gets one real POST
+ * attempt — still under the per-post timeout and still fail-soft, so the
+ * tripped-breaker worst-case drain stays bounded (3 consecutive ~5s
+ * failures to trip + one ~5s final attempt).
+ *
+ * Signal-path caveats consumers must tolerate (accepted contract slack —
+ * on SIGINT/SIGTERM the flush is bounded and best-effort, see
+ * `commands/run.ts`):
+ *   - `run_finished` may arrive BEFORE late `execution_completed`
+ *     stragglers that were still being built when the signal landed.
+ *   - a `run_finished` with status "failed" may arrive with NO subsequent
+ *     bundle upload (the process exits before auto-publish runs).
  */
 
 /** One planned (test × profile) execution in the run matrix. */
@@ -151,10 +168,11 @@ export function createRunEventEmitter(input: {
   // Warning-cap interaction: `failureCount` (per-event warnings + one
   // "suppressed" line) counts TOTAL failures across the run, while the
   // breaker counts CONSECUTIVE failures. When the dashboard is dead from
-  // the start the breaker trips on the 3rd failure and no 4th failure ever
-  // happens, so the trip line effectively replaces the "suppressed" line.
-  // When successes interleave, both lines can appear — that's intentional:
-  // the cap silences per-event noise, the trip line announces the drop.
+  // the start the breaker trips on the 3rd failure and the only later
+  // failure possible is run_finished's breaker-bypass attempt (which then
+  // prints the "suppressed" line). When successes interleave, both lines
+  // can appear — that's intentional: the cap silences per-event noise, the
+  // trip line announces the drop.
   const noteFailure = (event: string, reason: unknown): void => {
     warnFailure(event, reason);
     consecutiveFailures += 1;
@@ -172,7 +190,10 @@ export function createRunEventEmitter(input: {
   const post = async (payload: RunEvent): Promise<void> => {
     // Breaker tripped: the dashboard is considered dead — drop the event
     // without a network round-trip so the chain (and settle()) stays fast.
-    if (breakerTripped) return;
+    // Exception: run_finished always gets one real attempt (bounded by the
+    // per-post timeout) — the breaker may have tripped on a transient blip,
+    // and without run_finished the dashboard can never close the run.
+    if (breakerTripped && payload.event !== "run_finished") return;
     try {
       const response = await fetchImpl(url, {
         method: "POST",

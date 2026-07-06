@@ -44,7 +44,8 @@ const SIGNAL_FLUSH_TIMEOUT_MS = 2000;
 
 /**
  * Bounded, best-effort flush of live run events for the signal path:
- * enqueue a failed `run_finished`, then wait for the emitter chain (and
+ * enqueue a failed `run_finished` (unless another path already enqueued
+ * one — see `skipRunFinished`), then wait for the emitter chain (and
  * any execution_completed builds the bridge has in flight) to settle —
  * but never longer than `capMs`. On this path `run_finished` may race
  * ahead of in-flight execution_completed events; that's acceptable for a
@@ -58,10 +59,17 @@ export async function flushRunFinishedOnSignal(input: {
   emitter: RunEventEmitter;
   bridge?: { settle(): Promise<void> };
   capMs?: number;
+  /**
+   * True when another path (the normal-path finally) already enqueued
+   * `run_finished` before the signal landed — the flush then only drains
+   * the existing chain instead of enqueueing a second, contradictory
+   * `run_finished("failed")` after the already-enqueued `"succeeded"`.
+   */
+  skipRunFinished?: boolean;
 }): Promise<void> {
   const capMs = input.capMs ?? SIGNAL_FLUSH_TIMEOUT_MS;
   const flush = (async () => {
-    input.emitter.runFinished("failed");
+    if (!input.skipRunFinished) input.emitter.runFinished("failed");
     // Wait (bounded by the race below) for pending execution_completed
     // builds to enqueue alongside the emitter chain, then drain whatever
     // the bridge added with a second settle().
@@ -160,6 +168,14 @@ export function registerRunCommand(program: Command): void {
         // run_finished).
         let activeEmitter: RunEventEmitter | undefined;
         let activeBridge: { settle(): Promise<void> } | undefined;
+        // Set by whichever path (normal-path finally or a signal handler)
+        // enqueues run_finished first; the loser skips its enqueue so the
+        // dashboard never sees two contradictory run_finished events.
+        let runFinishedEmitted = false;
+        // First signal wins: SIGINT and SIGTERM each register a handler,
+        // and receiving both must not run abandon+flush twice — the second
+        // signal skips straight to the exit.
+        let signalHandled = false;
 
         // Register signal handlers ONCE per `evals run` invocation (not
         // once per (profile, test) iteration — that would leak listeners
@@ -182,12 +198,27 @@ export function registerRunCommand(program: Command): void {
         // first.
         for (const signal of ["SIGINT", "SIGTERM"] as const) {
           process.once(signal, () => {
+            // A second signal (e.g. SIGINT then SIGTERM) while the first
+            // is mid-flush must not abandon+flush again — exit right away.
+            if (signalHandled) process.exit(SIGNAL_EXIT_CODES[signal]);
+            signalHandled = true;
             abandonAllRunningRunsSync({ signal });
+            // Detach the run-metadata observer BEFORE the deferred-exit
+            // flush: queued async metadata writes keep resolving during
+            // the up-to-2s drain, and without this the bridge would keep
+            // enqueueing execution events after this path's run_finished.
+            setRunMetadataObserver(undefined);
             const emitter = activeEmitter;
             if (!emitter) process.exit(SIGNAL_EXIT_CODES[signal]);
+            // If the normal-path finally already enqueued run_finished
+            // (signal landed mid-drain, before it cleared activeEmitter),
+            // only drain — don't enqueue a contradictory "failed".
+            const skipRunFinished = runFinishedEmitted;
+            runFinishedEmitted = true;
             void flushRunFinishedOnSignal({
               emitter,
               bridge: activeBridge,
+              skipRunFinished,
             }).finally(() => process.exit(SIGNAL_EXIT_CODES[signal]));
           });
         }
@@ -355,7 +386,14 @@ export function registerRunCommand(program: Command): void {
           // push (frozen contract).
           if (emitter && bridge) {
             await bridge.settle();
-            emitter.runFinished(threw || anyFailed ? "failed" : "succeeded");
+            // A signal handler may have won the run_finished race while
+            // the bridge settle above was in flight — in that case its
+            // "failed" is already enqueued and this path must not add a
+            // second, contradictory event.
+            if (!runFinishedEmitted) {
+              runFinishedEmitted = true;
+              emitter.runFinished(threw || anyFailed ? "failed" : "succeeded");
+            }
             // Fully drain the emitter before publishing — an earlier
             // bounded drain (15s cap) could return while the queued
             // run_finished POST was still pending, letting the bundle

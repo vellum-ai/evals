@@ -271,9 +271,21 @@ describe("fail-soft behavior", () => {
 
   test("timeout: a never-resolving fetch is aborted and settle resolves", async () => {
     const warn = spyWarn();
+    const timeoutMs = 5;
+    const seenSignals: Array<AbortSignal | null | undefined> = [];
     const fetchImpl = ((_url: unknown, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {
+        seenSignals.push(init?.signal);
+        // The timer behind AbortSignal.timeout() is unref'd, so if this
+        // pending promise were the only work, Bun could exit the event loop
+        // without ever firing it and settle() would hang. A real (ref'd)
+        // setTimeout keeps the loop alive long enough for the abort to fire,
+        // and doubles as a fallback rejection so the test can never hang.
+        const fallback = setTimeout(() => {
+          reject(new Error("fake fetch: abort never fired"));
+        }, timeoutMs + 200);
         init?.signal?.addEventListener("abort", () => {
+          clearTimeout(fallback);
           reject(init.signal?.reason ?? new Error("aborted"));
         });
       })) as typeof fetch;
@@ -281,12 +293,14 @@ describe("fail-soft behavior", () => {
       config,
       sessionId: "s1",
       fetchImpl,
-      timeoutMs: 5,
+      timeoutMs,
     });
 
     emitter.runFinished("failed");
     await emitter.settle();
 
+    expect(seenSignals).toHaveLength(1);
+    expect(seenSignals[0]?.aborted).toBe(true);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]![0])).toStartWith(
       "[run-events] failed to post run_finished event:",

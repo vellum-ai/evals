@@ -2,9 +2,14 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
-import { applyUnitLimit, loadBenchmark } from "../benchmark";
+import {
+  applyUnitLimit,
+  invokeReportPlanned,
+  loadBenchmark,
+  type PlannedExecution,
+} from "../benchmark";
 
 const originalBenchmarksDir = process.env.EVALS_BENCHMARKS_DIR;
 
@@ -152,5 +157,81 @@ describe("applyUnitLimit", () => {
     const units = ["a", "b", "c"];
     applyUnitLimit(units, 1);
     expect(units).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("invokeReportPlanned", () => {
+  const planned: PlannedExecution[] = [{ testId: "t-1", profileId: "p-1" }];
+
+  test("awaits an async reporter before resolving, passing the planned matrix", async () => {
+    let resolveReporter!: () => void;
+    let received: PlannedExecution[] | undefined;
+    const reporterDone = new Promise<void>((resolve) => {
+      resolveReporter = resolve;
+    });
+    let settled = false;
+    const invocation = invokeReportPlanned(
+      {
+        reportPlanned: (p) => {
+          received = p;
+          return reporterDone;
+        },
+      },
+      planned,
+    ).then(() => {
+      settled = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(received).toEqual(planned);
+    expect(settled).toBe(false);
+
+    resolveReporter();
+    await invocation;
+    expect(settled).toBe(true);
+  });
+
+  test("tolerates an absent hook", async () => {
+    await expect(invokeReportPlanned({}, planned)).resolves.toBeUndefined();
+  });
+
+  test("a rejecting reporter is logged and never aborts the run", async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        invokeReportPlanned(
+          {
+            reportPlanned: () => Promise.reject(new Error("dashboard down")),
+          },
+          planned,
+        ),
+      ).resolves.toBeUndefined();
+      expect(warn.mock.calls).toEqual([
+        ["[evals] reportPlanned reporter failed: dashboard down"],
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("a synchronously-throwing reporter is logged and never aborts the run", async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        invokeReportPlanned(
+          {
+            reportPlanned: () => {
+              throw new Error("sync boom");
+            },
+          },
+          planned,
+        ),
+      ).resolves.toBeUndefined();
+      expect(warn.mock.calls).toEqual([
+        ["[evals] reportPlanned reporter failed: sync boom"],
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

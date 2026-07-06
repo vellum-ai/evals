@@ -15,7 +15,10 @@ import type {
   BenchmarkRunInput,
   BenchmarkRunResult,
 } from "../../../src/lib/benchmark";
-import { applyUnitLimit } from "../../../src/lib/benchmark";
+import {
+  applyUnitLimit,
+  invokeReportPlanned,
+} from "../../../src/lib/benchmark";
 import { listBenchmarkUnitIds } from "../../../src/lib/catalog";
 import {
   runEvalOnce,
@@ -113,7 +116,7 @@ export async function run(
   const planned = profiles.flatMap((profile) =>
     tests.map((test) => ({ testId: test.id, profileId: profile.id })),
   );
-  await input.reportPlanned?.(planned);
+  await invokeReportPlanned(input, planned);
 
   let anyFailed = false;
   // Build the full (profile, test) task list, then fan out across

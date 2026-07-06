@@ -247,20 +247,51 @@ const BREAKER_WARNING =
 
 /**
  * A fetch stub that walks a script of outcomes ("fail" rejects, "ok"
- * resolves 200) and counts calls; calls beyond the script reject.
+ * resolves 200), counts calls, and records each POSTed event name;
+ * calls beyond the script reject.
  */
 function scriptedFetch(script: Array<"fail" | "ok">): {
   callCount: () => number;
+  events: string[];
   fetchImpl: typeof fetch;
 } {
   let calls = 0;
-  const fetchImpl = ((_url: unknown) => {
+  const events: string[] = [];
+  const fetchImpl = ((_url: unknown, init?: RequestInit) => {
+    events.push((JSON.parse(String(init?.body)) as { event: string }).event);
     const outcome = script[calls++] ?? "fail";
     return outcome === "ok"
       ? Promise.resolve(new Response(null, { status: 200 }))
       : Promise.reject(new Error("connection refused"));
   }) as typeof fetch;
-  return { callCount: () => calls, fetchImpl };
+  return { callCount: () => calls, events, fetchImpl };
+}
+
+/**
+ * A fetch stub simulating a dead dashboard: every POST hangs until its
+ * AbortSignal fires. The timer behind AbortSignal.timeout() is unref'd, so
+ * if the pending promise were the only work, Bun could exit the event loop
+ * without ever firing it and settle() would hang. A real (ref'd) setTimeout
+ * keeps the loop alive long enough for the abort to fire, and doubles as a
+ * fallback rejection so a test can never hang.
+ */
+function hangingFetch(timeoutMs: number): {
+  seenSignals: Array<AbortSignal | null | undefined>;
+  fetchImpl: typeof fetch;
+} {
+  const seenSignals: Array<AbortSignal | null | undefined> = [];
+  const fetchImpl = ((_url: unknown, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      seenSignals.push(init?.signal);
+      const fallback = setTimeout(() => {
+        reject(new Error("fake fetch: abort never fired"));
+      }, timeoutMs + 200);
+      init?.signal?.addEventListener("abort", () => {
+        clearTimeout(fallback);
+        reject(init.signal?.reason ?? new Error("aborted"));
+      });
+    })) as typeof fetch;
+  return { seenSignals, fetchImpl };
 }
 
 describe("fail-soft behavior", () => {
@@ -329,23 +360,7 @@ describe("fail-soft behavior", () => {
   test("timeout: a never-resolving fetch is aborted and settle resolves", async () => {
     const warn = spyWarn();
     const timeoutMs = 5;
-    const seenSignals: Array<AbortSignal | null | undefined> = [];
-    const fetchImpl = ((_url: unknown, init?: RequestInit) =>
-      new Promise<Response>((_resolve, reject) => {
-        seenSignals.push(init?.signal);
-        // The timer behind AbortSignal.timeout() is unref'd, so if this
-        // pending promise were the only work, Bun could exit the event loop
-        // without ever firing it and settle() would hang. A real (ref'd)
-        // setTimeout keeps the loop alive long enough for the abort to fire,
-        // and doubles as a fallback rejection so the test can never hang.
-        const fallback = setTimeout(() => {
-          reject(new Error("fake fetch: abort never fired"));
-        }, timeoutMs + 200);
-        init?.signal?.addEventListener("abort", () => {
-          clearTimeout(fallback);
-          reject(init.signal?.reason ?? new Error("aborted"));
-        });
-      })) as typeof fetch;
+    const { seenSignals, fetchImpl } = hangingFetch(timeoutMs);
     const emitter = createRunEventEmitter({
       config,
       sessionId: "s1",
@@ -385,7 +400,7 @@ describe("fail-soft behavior", () => {
 });
 
 describe("circuit breaker", () => {
-  test("trips after 3 consecutive failures: later events never call fetch, settle resolves", async () => {
+  test("trips after 3 consecutive failures: later execution events never call fetch, settle resolves", async () => {
     const warn = spyWarn();
     const { callCount, fetchImpl } = scriptedFetch([]);
     const emitter = createRunEventEmitter({
@@ -403,13 +418,49 @@ describe("circuit breaker", () => {
     // 4th event onward: short-circuited, no network attempt, no new warns.
     const warnsAtTrip = warn.mock.calls.length;
     emitter.executionStarted({ testId: "t-4", profileId: "p-1" });
-    emitter.runFinished("failed");
+    emitter.executionCompleted({
+      testId: "t-4",
+      profileId: "p-1",
+      status: "failed",
+      scoreTotal: 0,
+      metrics: [],
+    });
     await emitter.settle();
 
     expect(callCount()).toBe(3);
     expect(warn).toHaveBeenCalledTimes(warnsAtTrip);
     const tripLines = warn.mock.calls.filter((c) => c[0] === BREAKER_WARNING);
     expect(tripLines).toHaveLength(1);
+  });
+
+  test("run_finished bypasses a tripped breaker: exactly one real POST attempt", async () => {
+    spyWarn();
+    const { callCount, events, fetchImpl } = scriptedFetch([]);
+    const emitter = createRunEventEmitter({
+      config,
+      sessionId: "s1",
+      fetchImpl,
+    });
+
+    // Trip the breaker, then queue more execution events behind it.
+    for (let i = 0; i < 5; i++) {
+      emitter.executionStarted({ testId: `t-${i}`, profileId: "p-1" });
+    }
+    await emitter.settle();
+    expect(callCount()).toBe(3);
+
+    // run_finished is the one event the dashboard needs to close the run,
+    // so it must reach fetch even though the breaker dropped t-3/t-4.
+    emitter.runFinished("failed");
+    await emitter.settle();
+
+    expect(callCount()).toBe(4);
+    expect(events).toEqual([
+      "execution_started",
+      "execution_started",
+      "execution_started",
+      "run_finished",
+    ]);
   });
 
   test("a success resets the consecutive counter: trips only after the post-success run of 3", async () => {
@@ -441,10 +492,32 @@ describe("circuit breaker", () => {
       warn.mock.calls.filter((c) => c[0] === BREAKER_WARNING),
     ).toHaveLength(1);
 
-    // Now tripped: a 7th event is dropped without a fetch call.
-    emitter.runFinished("failed");
+    // Now tripped: a 7th execution event is dropped without a fetch call.
+    emitter.executionStarted({ testId: "t-7", profileId: "p-1" });
     await emitter.settle();
     expect(callCount()).toBe(6);
+  });
+
+  test("dead-from-start dashboard: run_finished's bypass attempt is timeout-bounded, settle() cannot hang", async () => {
+    spyWarn();
+    const timeoutMs = 5;
+    const { seenSignals, fetchImpl } = hangingFetch(timeoutMs);
+    const emitter = createRunEventEmitter({
+      config,
+      sessionId: "s1",
+      fetchImpl,
+      timeoutMs,
+    });
+
+    for (let i = 0; i < 6; i++) {
+      emitter.executionStarted({ testId: `t-${i}`, profileId: "p-1" });
+    }
+    emitter.runFinished("failed");
+    await emitter.settle();
+
+    // 3 timed-out attempts trip the breaker, events 4-6 short-circuit,
+    // and run_finished gets exactly one (aborted) bypass attempt.
+    expect(seenSignals).toHaveLength(4);
   });
 
   test("trip warning is logged exactly once even as more events are dropped", async () => {

@@ -633,7 +633,13 @@ export async function scavengeAbandonedRuns(
  * about to be killed by `process.exit`, so the threshold is meaningless.
  *
  * Uses `*Sync` FS APIs because the caller (`commands/run.ts` signal handler)
- * needs to complete before `process.exit` flushes the loop.
+ * needs the abandonment on disk before the process exits. Note the exit is
+ * no longer necessarily synchronous after this returns: in live-events mode
+ * the signal handler defers `process.exit` for up to ~2s while it flushes
+ * run events, so queued async metadata writes can still resolve after the
+ * sync abandon writes and win last-write (flipping a run back to
+ * `running`). That's accepted — the 60s scavenger self-heals any such run
+ * on the next `evals run`.
  *
  * Intentionally does NOT notify the run-metadata observer: this sync path
  * runs as the process exits, and downstream consumers deliberately ignore

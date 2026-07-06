@@ -52,6 +52,38 @@ describe("flushRunFinishedOnSignal", () => {
     expect(emitterSettles).toBe(2);
   });
 
+  test("skipRunFinished: drains without enqueueing a second run_finished", async () => {
+    let emitterSettles = 0;
+    let bridgeSettles = 0;
+    const { emitter, finishedWith } = stubEmitter({
+      settle: () => {
+        emitterSettles += 1;
+        return Promise.resolve();
+      },
+    });
+    const bridge = {
+      settle: () => {
+        bridgeSettles += 1;
+        return Promise.resolve();
+      },
+    };
+
+    // Simulates a signal landing while the normal-path finally was
+    // mid-drain: run_finished("succeeded") is already on the chain, so
+    // the signal flush must only drain, never add a contradictory
+    // "failed".
+    await flushRunFinishedOnSignal({
+      emitter,
+      bridge,
+      capMs: 5000,
+      skipRunFinished: true,
+    });
+
+    expect(finishedWith).toEqual([]);
+    expect(bridgeSettles).toBe(1);
+    expect(emitterSettles).toBe(2);
+  });
+
   test("works without a bridge", async () => {
     const { emitter, finishedWith } = stubEmitter({
       settle: () => Promise.resolve(),

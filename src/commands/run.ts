@@ -11,6 +11,7 @@ import {
   setRunMetadataObserver,
 } from "../lib/metrics";
 import { reapAbandonedEvalContainers } from "../lib/adapters/docker-reaper";
+import { autoPublishSession } from "../lib/auto-publish";
 import { loadBenchmark } from "../lib/benchmark";
 import { DEFAULT_BENCHMARK_ID } from "../lib/catalog";
 import { loadProfile } from "../lib/profile";
@@ -392,8 +393,8 @@ export function registerRunCommand(program: Command): void {
           // then drain the sequential chain — bounded by
           // NORMAL_FLUSH_TIMEOUT_MS as defense-in-depth (the emitter's
           // circuit breaker already short-circuits a dead dashboard).
-          // A later PR auto-publishes the report bundle after this block,
-          // before --serve.
+          // The auto-publish below runs after this block, so run_finished
+          // always precedes the bundle push (frozen contract).
           if (emitter && bridge) {
             await bridge.settle();
             emitter.runFinished(threw || anyFailed ? "failed" : "succeeded");
@@ -408,6 +409,24 @@ export function registerRunCommand(program: Command): void {
         }
 
         if (anyFailed) {
+          process.exitCode = 1;
+        }
+
+        // Auto-publish the session bundle to the qa dashboard when the
+        // launcher env asks for it (EVAL_RESULTS_UPLOAD_URL). This runs
+        // only when `benchmark.run` resolved — pass or fail alike, since
+        // failed-run transcripts are exactly what needs inspecting — and
+        // never on the rethrow path (config/dataset errors abort before
+        // meaningful artifacts, and that path already exits non-zero).
+        // With no env vars set, autoPublishSession returns "disabled"
+        // silently and behavior is byte-identical to before.
+        const publishResult = await autoPublishSession({ sessionId: session });
+        if (publishResult === "failed") {
+          // A green Job with no uploaded results is worse than a red one —
+          // an upload failure after a completed eval must fail the pod,
+          // while a missing token merely warns (a publishing
+          // misconfiguration shouldn't crash a $20 finished run) and
+          // live-event failures never affect the exit code at all.
           process.exitCode = 1;
         }
 

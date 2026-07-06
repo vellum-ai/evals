@@ -126,20 +126,21 @@ export async function run(
   // index format + invalidation rules.
   const trajectoryReader = await openTrajectories(dataRoot);
 
-  // Announce the planned test×profile matrix before anything executes.
-  // `testId` is `item.questionId` — the id the runner stamps into each
-  // unit's RunMetadata — so live-progress consumers can match execution
-  // events to these rows.
-  const planned = profiles.flatMap((profile) =>
-    selected.map((item) => ({
-      testId: item.questionId,
-      profileId: profile.id,
-    })),
-  );
-  input.reportPlanned?.(planned);
-
   let anyFailed = false;
   try {
+    // Announce the planned test×profile matrix before anything executes.
+    // `testId` is `item.questionId` — the id the runner stamps into each
+    // unit's RunMetadata — so live-progress consumers can match execution
+    // events to these rows. This lives inside the try/finally so a
+    // throwing reporter can't leak the trajectory file handle.
+    const planned = profiles.flatMap((profile) =>
+      selected.map((item) => ({
+        testId: item.questionId,
+        profileId: profile.id,
+      })),
+    );
+    await input.reportPlanned?.(planned);
+
     // Build the full (profile, item) task list, then fan out across
     // `workers` slots. The trajectory reader is concurrency-safe
     // (positional pread, no shared cursor), and each unit hatches its

@@ -127,8 +127,12 @@ export interface BenchmarkRunInput {
    * qa-dashboard live-events wiring in `commands/run.ts`) can render
    * pending rows up front. `undefined` in local runs — benchmarks
    * must tolerate its absence (`input.reportPlanned?.(planned)`).
+   * Benchmarks `await` the invocation, so an async reporter (e.g. one
+   * persisting a `run_started` event) is guaranteed to settle before
+   * the first execution starts, and its rejections propagate instead
+   * of going unhandled.
    */
-  reportPlanned?: (planned: PlannedExecution[]) => void;
+  reportPlanned?: (planned: PlannedExecution[]) => void | Promise<void>;
 }
 
 /**

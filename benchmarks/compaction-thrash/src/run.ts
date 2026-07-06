@@ -106,7 +106,7 @@ export async function run(
       profileId: profile.id,
     })),
   );
-  input.reportPlanned?.(planned);
+  await input.reportPlanned?.(planned);
 
   let anyFailed = false;
   const tasks = profiles.flatMap((profile) =>

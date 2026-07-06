@@ -113,7 +113,7 @@ export async function run(
   const planned = profiles.flatMap((profile) =>
     tests.map((test) => ({ testId: test.id, profileId: profile.id })),
   );
-  input.reportPlanned?.(planned);
+  await input.reportPlanned?.(planned);
 
   let anyFailed = false;
   // Build the full (profile, test) task list, then fan out across

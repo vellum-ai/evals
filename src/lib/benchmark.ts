@@ -48,6 +48,18 @@ export const BenchmarkManifestSchema = z.object({
 export type BenchmarkManifest = z.infer<typeof BenchmarkManifestSchema>;
 
 /**
+ * One planned (test, profile) execution in a benchmark run. `testId`
+ * is the id the benchmark later stamps into that unit's `RunMetadata`
+ * (`test.id` for personal-intelligence, `item.questionId` for
+ * longmemeval-v2, `scenarioId` for compaction-thrash) — consumers
+ * match `execution_*` events to planned rows by `(testId, profileId)`.
+ */
+export interface PlannedExecution {
+  testId: string;
+  profileId: string;
+}
+
+/**
  * Shared input to every benchmark's `run()` method. The CLI builds one
  * of these from its parsed options and hands it to `benchmark.run()` —
  * each benchmark module decides how to translate it into a concrete
@@ -107,6 +119,20 @@ export interface BenchmarkRunInput {
    * the resources.
    */
   workers: number | undefined;
+  /**
+   * Optional hook announcing the run's full planned test×profile
+   * matrix. Invoked at most once by the benchmark's run module after
+   * unit selection (filter/experimental-exclusion/limit applied) and
+   * before the first execution starts, so callers (e.g. the
+   * qa-dashboard live-events wiring in `commands/run.ts`) can render
+   * pending rows up front. `undefined` in local runs — benchmarks
+   * must tolerate its absence (`input.reportPlanned?.(planned)`).
+   * Benchmarks `await` the invocation, so an async reporter (e.g. one
+   * persisting a `run_started` event) is guaranteed to settle before
+   * the first execution starts, and its rejections propagate instead
+   * of going unhandled.
+   */
+  reportPlanned?: (planned: PlannedExecution[]) => void | Promise<void>;
 }
 
 /**

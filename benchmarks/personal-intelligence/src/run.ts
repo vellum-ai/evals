@@ -106,6 +106,15 @@ export async function run(
     );
   }
 
+  // Announce the planned test×profile matrix before anything executes
+  // — same cross product as the task list below, so live-progress
+  // consumers can match execution events to these rows by
+  // (testId, profileId).
+  const planned = profiles.flatMap((profile) =>
+    tests.map((test) => ({ testId: test.id, profileId: profile.id })),
+  );
+  await input.reportPlanned?.(planned);
+
   let anyFailed = false;
   // Build the full (profile, test) task list, then fan out across
   // `workers` slots. Each unit hatches its own container(s) with a

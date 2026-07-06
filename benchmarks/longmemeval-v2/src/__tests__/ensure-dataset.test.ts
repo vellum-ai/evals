@@ -206,6 +206,25 @@ describe("ensureDatasetAvailable", () => {
     expect(calls.map((c) => c.fn)).toEqual(["download"]);
   });
 
+  test("env=1 + completeness-check stat fails (haystacks is a regular file): actionable error, not a bare errno", async () => {
+    process.env[AUTO_DOWNLOAD_ENV] = "1";
+    const dataRoot = await makeEmptyDataRoot();
+    await writeQuestions(dataRoot);
+    // `haystacks` occupied by a regular file makes stat()ing the tier
+    // haystack inside it fail ENOTDIR — a non-ENOENT error that pathExists
+    // rethrows rather than treating as "missing".
+    await writeFile(join(dataRoot, "haystacks"), "not a directory", "utf8");
+    const { calls } = installSpies();
+
+    const rejection = expect(ensureDatasetAvailable(dataRoot, "small")).rejects;
+    await rejection.toThrow(/auto-download failed/);
+    await rejection.toThrow(/xiaowu0162\/longmemeval-v2/);
+    await rejection.toThrow(dataRoot);
+    await rejection.toThrow(/EVALS_DATA_AUTO_DOWNLOAD/);
+    await rejection.toThrow(/ENOTDIR/);
+    expect(calls).toEqual([]);
+  });
+
   test("env=1 + all files present + fast-path relabel rejects once (torn file): falls back to download + relabel, no error", async () => {
     process.env[AUTO_DOWNLOAD_ENV] = "1";
     const dataRoot = await makeEmptyDataRoot();

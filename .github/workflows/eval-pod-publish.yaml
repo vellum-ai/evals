@@ -241,7 +241,12 @@ jobs:
   # authoritative for the gate (the image really was pushed), while a catalog
   # failure still fails the workflow run visibly — a silently stale catalog
   # would defeat the purpose, so there is no failure suppression anywhere
-  # below: no continue-on-error, no `|| true`.
+  # below: no continue-on-error, no `|| true`. The flip side of keying the
+  # gate on build-and-push alone is that a catalog failure does NOT make the
+  # next run rebuild: the commit stays "published", so the upload step below
+  # writes eval-catalog/<sha>.json on EVERY build (refresh builds included)
+  # to backfill any per-SHA object a failed prior publish-catalog left
+  # missing.
   publish-catalog:
     # check-for-new-commits is in `needs` for its refresh_only output;
     # build-and-push guarantees an image was actually pushed first — a
@@ -282,27 +287,33 @@ jobs:
           REFRESH_ONLY: ${{ needs.check-for-new-commits.outputs.refresh_only }}
         run: |
           set -euo pipefail
-          # imageTag mirrors the tag the Docker step actually pushed for THIS
-          # build (see the tags step in build-and-push): a content build
-          # pushes the immutable :<sha> tag, while a refresh_only build
-          # pushes ONLY `latest` and leaves :<sha> untouched — so a refresh
-          # catalog must point consumers at `latest`, not at the stale pinned
-          # sha image. This refines the frozen contract: imageTag is "the tag
-          # pushed for this build" (<sha> on content builds, `latest` on
-          # refresh builds); the JSON shape is unchanged.
-          if [ "$REFRESH_ONLY" = "true" ]; then
-            IMAGE_TAG="latest"
-          else
-            IMAGE_TAG="$GIT_SHA"
-          fi
-          export IMAGE_TAG
+          # The frozen contract: eval-catalog/<sha>.json is written on EVERY
+          # build, so catalog-sha.json (imageTag = the immutable :<sha> image
+          # tag) is generated unconditionally. Its content is deterministic
+          # for a given commit modulo `generatedAt` — the same checkout yields
+          # the same benchmarks/profiles — so regenerating it on a refresh
+          # build is an idempotent rewrite.
+          #
+          # latest.json, by contrast, mirrors wherever the `latest` IMAGE tag
+          # currently points (see the tags step in build-and-push): a content
+          # build pushes the immutable :<sha> tag and moves `latest` to it, so
+          # the pinned sha catalog doubles as latest.json; a refresh_only
+          # build pushes ONLY the floating `latest` image and leaves :<sha>
+          # untouched, so its latest.json must carry imageTag=latest — hence
+          # the second script run below. The script is cheap and pure aside
+          # from `generatedAt`; the two outputs differ only in `imageTag`.
           bun install
-          bun scripts/generate-catalog.ts > catalog.json
-          # Guard against an empty/garbage artifact reaching the bucket.
-          bun -e 'const c = await Bun.file("catalog.json").json();
+          IMAGE_TAG="$GIT_SHA" bun scripts/generate-catalog.ts > catalog-sha.json
+          # Guard against an empty/garbage artifact reaching the bucket. Only
+          # catalog-sha.json needs checking: the latest variant below is the
+          # same script over the same checkout, differing only in imageTag.
+          bun -e 'const c = await Bun.file("catalog-sha.json").json();
             if (!Array.isArray(c.benchmarks) || c.benchmarks.length === 0) throw new Error("catalog has no benchmarks");
             if (!Array.isArray(c.profiles) || c.profiles.length === 0) throw new Error("catalog has no profiles");'
-          cat catalog.json
+          cat catalog-sha.json
+          if [ "$REFRESH_ONLY" = "true" ]; then
+            IMAGE_TAG="latest" bun scripts/generate-catalog.ts > catalog-latest.json
+          fi
 
       - name: Upload eval catalog to GCS
         id: catalog
@@ -315,33 +326,42 @@ jobs:
           REFRESH_ONLY: ${{ needs.check-for-new-commits.outputs.refresh_only }}
         run: |
           set -euo pipefail
-          # The uploaded objects mirror the image tags pushed by THIS build,
-          # exactly like the Docker tags step:
+          # Two invariants, mirroring the image tags:
           #
-          # - Content build: write the per-commit eval-catalog/<sha>.json,
-          #   plus latest.json when on the main ref (a manual dispatch from a
-          #   non-main ref must not repoint latest.json, just as it must not
-          #   move the `latest` image tag).
-          # - Refresh build: the image push moved ONLY `latest` and left
-          #   :<sha> untouched, so update ONLY latest.json and do NOT
-          #   overwrite eval-catalog/<sha>.json — that object was already
-          #   written by this commit's content build and pins the immutable
-          #   sha image.
+          # - eval-catalog/<sha>.json is written on EVERY build (immutable
+          #   content modulo `generatedAt`, always stamped with the immutable
+          #   :<sha> image tag). On refresh builds this is an idempotent
+          #   rewrite that doubles as a backfill: if a prior content build
+          #   pushed the image but publish-catalog failed before writing
+          #   <sha>.json, the skip gate (keyed on build-and-push alone) still
+          #   treats the commit as published, so a later refresh is the only
+          #   run that can heal the gap — without this unconditional write,
+          #   consumers fetching the per-SHA object for a pushed image would
+          #   404 forever unless someone manually reran the failed job. The
+          #   rewrite is safe: refresh only happens for already-published
+          #   commits, so the immutable :<sha> image it points at is
+          #   guaranteed to exist, and the catalog content is deterministic
+          #   for the checkout.
+          # - latest.json mirrors wherever the `latest` IMAGE tag currently
+          #   points: on a main-ref content build that is the just-pushed
+          #   :<sha> image (the pinned tag is more precise, so cp the sha
+          #   catalog); on a refresh build it is the refreshed floating
+          #   `latest` image (cp the imageTag=latest catalog); a manual
+          #   dispatch from a non-main ref must not repoint latest.json, just
+          #   as it must not move the `latest` image tag.
+          gcloud storage cp catalog-sha.json "gs://${CATALOG_BUCKET}/eval-catalog/${SHA}.json" \
+            --content-type=application/json
           if [ "$REFRESH_ONLY" = "true" ]; then
-            gcloud storage cp catalog.json "gs://${CATALOG_BUCKET}/eval-catalog/latest.json" \
+            gcloud storage cp catalog-latest.json "gs://${CATALOG_BUCKET}/eval-catalog/latest.json" \
               --content-type=application/json --cache-control=no-cache
-            echo "summary=\`eval-catalog/latest.json\` (daily refresh — \`eval-catalog/${SHA}.json\` left untouched)" >> "$GITHUB_OUTPUT"
+            echo "summary=\`eval-catalog/${SHA}.json\` (backfill/rewrite), \`eval-catalog/latest.json\` (daily refresh — points at the refreshed \`latest\` image)" >> "$GITHUB_OUTPUT"
+          elif [ "$REF" = "refs/heads/main" ]; then
+            gcloud storage cp catalog-sha.json "gs://${CATALOG_BUCKET}/eval-catalog/latest.json" \
+              --content-type=application/json --cache-control=no-cache
+            echo "summary=\`eval-catalog/${SHA}.json\`, \`eval-catalog/latest.json\`" >> "$GITHUB_OUTPUT"
           else
-            gcloud storage cp catalog.json "gs://${CATALOG_BUCKET}/eval-catalog/${SHA}.json" \
-              --content-type=application/json
-            if [ "$REF" = "refs/heads/main" ]; then
-              gcloud storage cp catalog.json "gs://${CATALOG_BUCKET}/eval-catalog/latest.json" \
-                --content-type=application/json --cache-control=no-cache
-              echo "summary=\`eval-catalog/${SHA}.json\`, \`eval-catalog/latest.json\`" >> "$GITHUB_OUTPUT"
-            else
-              echo "::notice::Non-main ref (${REF}) — wrote eval-catalog/${SHA}.json only; latest.json not moved."
-              echo "summary=\`eval-catalog/${SHA}.json\` (non-main ref — \`latest.json\` not moved)" >> "$GITHUB_OUTPUT"
-            fi
+            echo "::notice::Non-main ref (${REF}) — wrote eval-catalog/${SHA}.json only; latest.json not moved."
+            echo "summary=\`eval-catalog/${SHA}.json\` (non-main ref — \`latest.json\` not moved)" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Summary

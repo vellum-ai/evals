@@ -11,7 +11,8 @@
  *   bun run data/download.ts --no-download    # relabel only (data already present)
  *   DATA_ROOT=/path bun run data/download.ts  # custom output dir
  *
- * Requires: huggingface-cli (`pip install -U "huggingface_hub[cli]"`).
+ * Requires: huggingface-cli (`pip install -U "huggingface_hub[cli]<1.0"`;
+ * huggingface_hub 1.x replaces `huggingface-cli` with a stub that exits 1).
  */
 import { readdir } from "node:fs/promises";
 import { resolve, dirname } from "node:path";

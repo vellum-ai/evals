@@ -1,6 +1,4 @@
 /** `evals run` — Cartesian profile × test runner. */
-import { randomBytes } from "crypto";
-
 import type { Command } from "commander";
 
 import {
@@ -10,11 +8,20 @@ import {
 import {
   abandonAllRunningRunsSync,
   scavengeAbandonedRuns,
+  setRunMetadataObserver,
 } from "../lib/metrics";
 import { reapAbandonedEvalContainers } from "../lib/adapters/docker-reaper";
+import { autoPublishSession } from "../lib/auto-publish";
 import { loadBenchmark } from "../lib/benchmark";
 import { DEFAULT_BENCHMARK_ID } from "../lib/catalog";
 import { loadProfile } from "../lib/profile";
+import {
+  createRunEventEmitter,
+  resolveRunEventsConfig,
+} from "../lib/run-events";
+import type { RunEventEmitter } from "../lib/run-events";
+import { createRunEventsBridge } from "../lib/run-events-bridge";
+import { resolveSessionId } from "../lib/session-id";
 import { openInBrowser, startReportServer } from "./server";
 
 /**
@@ -27,43 +34,64 @@ const SIGNAL_EXIT_CODES: Record<"SIGINT" | "SIGTERM", number> = {
   SIGTERM: 143,
 };
 
+/**
+ * Upper bound on how long a signalled `evals run` may linger to flush
+ * live events to the qa dashboard. A dead/slow dashboard must never keep
+ * a killed process alive past this cap — the flush is strictly
+ * best-effort.
+ */
+const SIGNAL_FLUSH_TIMEOUT_MS = 2000;
+
+/**
+ * Bounded, best-effort flush of live run events for the signal path:
+ * enqueue a failed `run_finished` (unless another path already enqueued
+ * one — see `skipRunFinished`), then wait for the emitter chain (and
+ * any execution_completed builds the bridge has in flight) to settle —
+ * but never longer than `capMs`. On this path `run_finished` may race
+ * ahead of in-flight execution_completed events; that's acceptable for a
+ * kill signal. Never rejects, and never keeps the process alive past the
+ * cap (the emitter's settle() never rejects; wrapped defensively anyway).
+ *
+ * Exported for tests only — production callers are the SIGINT/SIGTERM
+ * handlers inside `registerRunCommand`.
+ */
+export async function flushRunFinishedOnSignal(input: {
+  emitter: RunEventEmitter;
+  bridge?: { settle(): Promise<void> };
+  capMs?: number;
+  /**
+   * True when another path (the normal-path finally) already enqueued
+   * `run_finished` before the signal landed — the flush then only drains
+   * the existing chain instead of enqueueing a second, contradictory
+   * `run_finished("failed")` after the already-enqueued `"succeeded"`.
+   */
+  skipRunFinished?: boolean;
+}): Promise<void> {
+  const capMs = input.capMs ?? SIGNAL_FLUSH_TIMEOUT_MS;
+  const flush = (async () => {
+    if (!input.skipRunFinished) input.emitter.runFinished("failed");
+    // Bridge first (bounded by the race below): its settle resolving
+    // means every in-flight execution_completed build has enqueued onto
+    // the emitter chain, so one emitter settle then drains everything.
+    // Neither settle rejects by contract; the catches are defensive (a
+    // bridge failure must not skip the emitter drain).
+    await input.bridge?.settle().catch(() => {});
+    await input.emitter.settle();
+  })().catch(() => {});
+  const cap = new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, capMs);
+    // Don't let the cap timer itself keep the event loop alive once the
+    // flush has won the race.
+    timer.unref?.();
+  });
+  await Promise.race([flush, cap]);
+}
+
 function splitCsv(raw: string): string[] {
   return raw
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-}
-
-/**
- * Session-id suffix used to disambiguate concurrent evals invocations.
- *
- * Format: `YYYYMMDDhhmmssSSS-XXXX` (17-digit ms-precision timestamp + 4
- * hex chars of randomness). The per-(profile, unit) run id stamping
- * happens inside each benchmark's `run()` module — we only need the
- * session-level suffix here so every execution in this invocation
- * clusters under the same session in the report server.
- */
-function sessionTimestampSuffix(): string {
-  const ms = new Date()
-    .toISOString()
-    .replace(/[^0-9]/g, "")
-    .slice(0, 17);
-  const rand = randomBytes(2).toString("hex");
-  return `${ms}-${rand}`;
-}
-
-function slugifyLabel(label: string): string {
-  const slug = label
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-  return slug.length > 0 ? slug : "";
-}
-
-function sessionId(label: string | undefined, timestamp: string): string {
-  const slug = label ? slugifyLabel(label) : "";
-  return slug ? `session-${timestamp}-${slug}` : `session-${timestamp}`;
 }
 
 export function registerRunCommand(program: Command): void {
@@ -96,6 +124,10 @@ export function registerRunCommand(program: Command): void {
       "--label <label>",
       "Human-readable tag stamped onto every (profile, unit) execution in this run, so they cluster together in the report server",
     )
+    .option(
+      "--session-id <id>",
+      "Explicit session id for this run (defaults to $EVAL_RESULTS_SESSION_ID, then a generated id). Used verbatim for .runs/ grouping, the report server, and export — the eval-pod launcher sets the env var so its run id and the uploaded bundle id coincide.",
+    )
     .option("--max-turns <n>", "Maximum simulator turns per run", (value) =>
       Number(value),
     )
@@ -121,21 +153,72 @@ export function registerRunCommand(program: Command): void {
         tests?: string;
         limit?: number;
         label?: string;
+        sessionId?: string;
         maxTurns?: number;
         quiet?: boolean;
         serve?: boolean;
         workers?: number;
       }) => {
+        // Live-events state the signal handlers close over. The handlers
+        // are registered before the emitter/bridge exist, so they observe
+        // them through these let-refs: assigned when live mode is enabled
+        // below, cleared after the normal-path settle in the try/finally
+        // (so a signal landing after a clean finish doesn't double-emit
+        // run_finished).
+        let activeEmitter: RunEventEmitter | undefined;
+        let activeBridge: { settle(): Promise<void> } | undefined;
+        // Set by whichever path (normal-path finally or a signal handler)
+        // enqueues run_finished first; the loser skips its enqueue so the
+        // dashboard never sees two contradictory run_finished events.
+        let runFinishedEmitted = false;
+        // First signal wins: SIGINT and SIGTERM each register a handler,
+        // and receiving both must not run abandon+flush twice — the second
+        // signal skips straight to the exit.
+        let signalHandled = false;
+
         // Register signal handlers ONCE per `evals run` invocation (not
         // once per (profile, test) iteration — that would leak listeners
         // and trigger MaxListenersExceededWarning past ~10 runs). On
         // SIGINT/SIGTERM, synchronously flip every `running` run on disk
         // to `abandoned` so they don't dangle, then exit with the POSIX
         // 128+signal convention so wrapping shells see a real exit code.
+        //
+        // A bare `process.exit` here would bypass the try/finally below,
+        // so a cancelled K8s Job that already posted run_started would
+        // leave the dashboard run permanently in progress. When live mode
+        // is active we therefore enqueue a failed run_finished and delay
+        // the exit until the event chain settles — bounded by
+        // SIGNAL_FLUSH_TIMEOUT_MS so a dead dashboard can't keep a killed
+        // process alive — and exit with the same POSIX code either way
+        // (see flushRunFinishedOnSignal). On this path run_finished may
+        // race ahead of in-flight execution_completed builds; acceptable
+        // for a kill signal (best-effort), which is why the bridge settle
+        // races inside the same cap instead of being awaited unboundedly
+        // first.
         for (const signal of ["SIGINT", "SIGTERM"] as const) {
           process.once(signal, () => {
+            // A second signal (e.g. SIGINT then SIGTERM) while the first
+            // is mid-flush must not abandon+flush again — exit right away.
+            if (signalHandled) process.exit(SIGNAL_EXIT_CODES[signal]);
+            signalHandled = true;
             abandonAllRunningRunsSync({ signal });
-            process.exit(SIGNAL_EXIT_CODES[signal]);
+            // Detach the run-metadata observer BEFORE the deferred-exit
+            // flush: queued async metadata writes keep resolving during
+            // the up-to-2s drain, and without this the bridge would keep
+            // enqueueing execution events after this path's run_finished.
+            setRunMetadataObserver(undefined);
+            const emitter = activeEmitter;
+            if (!emitter) process.exit(SIGNAL_EXIT_CODES[signal]);
+            // If the normal-path finally already enqueued run_finished
+            // (signal landed mid-drain, before it cleared activeEmitter),
+            // only drain — don't enqueue a contradictory "failed".
+            const skipRunFinished = runFinishedEmitted;
+            runFinishedEmitted = true;
+            void flushRunFinishedOnSignal({
+              emitter,
+              bridge: activeBridge,
+              skipRunFinished,
+            }).finally(() => process.exit(SIGNAL_EXIT_CODES[signal]));
           });
         }
 
@@ -230,9 +313,32 @@ export function registerRunCommand(program: Command): void {
 
         // Stamp every execution in this invocation with the same session id
         // so the report server can render them as a single grouped run.
-        const sessionTimestamp = sessionTimestampSuffix();
-        const session = sessionId(opts.label, sessionTimestamp);
+        // The label is stamped on metadata even alongside an explicit id;
+        // it is only woven into *generated* ids.
+        const session = resolveSessionId({
+          explicit: opts.sessionId,
+          env: process.env,
+          label: opts.label,
+        });
         const sessionLabel = opts.label;
+
+        // Live results: when the launcher env (EVAL_RESULTS_UPLOAD_URL +
+        // QA_AUTH_TOKEN) is present, mirror this run's lifecycle to the
+        // qa dashboard — run_started (planned matrix) via reportPlanned,
+        // execution_started/execution_completed via the run-metadata
+        // observer seam, run_finished after everything settles. With
+        // either env var missing, `eventsConfig` is undefined and the
+        // run behaves byte-identically to before.
+        const eventsConfig = resolveRunEventsConfig();
+        const emitter = eventsConfig
+          ? createRunEventEmitter({ config: eventsConfig, sessionId: session })
+          : undefined;
+        const bridge = emitter
+          ? createRunEventsBridge({ emitter, sessionId: session })
+          : undefined;
+        if (bridge) setRunMetadataObserver(bridge.observer);
+        activeEmitter = emitter;
+        activeBridge = bridge;
 
         // Snapshot argv at the top of the action handler — Commander
         // doesn't mutate `process.argv` but a downstream library or a
@@ -246,20 +352,93 @@ export function registerRunCommand(program: Command): void {
         // ingest→ask over `BenchmarkItem`, …). The CLI just hands
         // it the shared input shape; no `if (id === …)` ladder, no
         // manifest "driver" enum.
-        const { anyFailed } = await benchmark.run({
-          profiles,
-          filterIds,
-          filterFlag: filter,
-          limit: opts.limit,
-          session,
-          sessionLabel,
-          cliArgv,
-          progress,
-          maxTurns: opts.maxTurns,
-          workers: opts.workers,
-        });
+        let anyFailed = false;
+        let threw = true;
+        try {
+          const result = await benchmark.run({
+            profiles,
+            filterIds,
+            filterFlag: filter,
+            limit: opts.limit,
+            session,
+            sessionLabel,
+            cliArgv,
+            progress,
+            maxTurns: opts.maxTurns,
+            workers: opts.workers,
+            reportPlanned: emitter
+              ? (planned) => emitter.runStarted(opts.benchmark, planned)
+              : undefined,
+          });
+          anyFailed = result.anyFailed;
+          threw = false;
+        } finally {
+          // Flush live events whether the run returned or threw (the
+          // awaits below complete before a throw propagates out of this
+          // block). Ordering satisfies the frozen contract — run_finished
+          // arrives after every execution event: the bridge's pending
+          // execution_completed builds enqueue onto the emitter chain
+          // asynchronously, so first `await bridge.settle()` (all
+          // execution_completed enqueued), THEN enqueue run_finished,
+          // then drain the sequential chain. The auto-publish below runs
+          // after this block, so run_finished always precedes the bundle
+          // push (frozen contract).
+          if (emitter && bridge) {
+            await bridge.settle();
+            // A signal handler may have won the run_finished race while
+            // the bridge settle above was in flight — in that case its
+            // "failed" is already enqueued and this path must not add a
+            // second, contradictory event.
+            if (!runFinishedEmitted) {
+              runFinishedEmitted = true;
+              emitter.runFinished(threw || anyFailed ? "failed" : "succeeded");
+            }
+            // Fully drain the emitter before publishing so run_finished
+            // always precedes the bundle push (frozen ordering contract).
+            // The unbounded settle() is safe: the emitter's circuit
+            // breaker bounds a dead dashboard (trips after 3 consecutive
+            // ~5s failures, then every remaining queued POST
+            // short-circuits instantly, with run_finished bypassing the
+            // trip for a single bounded attempt), and a slow-but-alive
+            // dashboard draining at its own pace is acceptable since the
+            // very next step is an upload to that same dashboard.
+            await emitter.settle();
+            setRunMetadataObserver(undefined);
+            // Clean finish — clear the signal handlers' refs so a signal
+            // arriving from here on exits immediately without emitting a
+            // second run_finished.
+            activeEmitter = undefined;
+            activeBridge = undefined;
+          }
+        }
 
         if (anyFailed) {
+          process.exitCode = 1;
+        }
+
+        // Auto-publish the session bundle to the qa dashboard when the
+        // launcher env asks for it (EVAL_RESULTS_UPLOAD_URL). This runs
+        // only when `benchmark.run` resolved — pass or fail alike, since
+        // failed-run transcripts are exactly what needs inspecting — and
+        // never on the rethrow path (config/dataset errors abort before
+        // meaningful artifacts, and that path already exits non-zero).
+        // With no env vars set, autoPublishSession returns "disabled"
+        // silently and behavior is byte-identical to before.
+        //
+        // Snapshot consistency: the bundle is captured the moment we
+        // get here, so it relies on the runners having fully drained
+        // their fire-and-forget `progress.ndjson` append chains before
+        // resolving. Each runner `await flush()`es its progress
+        // lifecycle at the end of its finally block (see
+        // src/lib/runner/progress-lifecycle.ts) — so `benchmark.run`
+        // resolving implies all progress writes are on disk.
+        const publishResult = await autoPublishSession({ sessionId: session });
+        if (publishResult === "failed") {
+          // A green Job with no uploaded results is worse than a red one —
+          // an upload failure after a completed eval must fail the pod,
+          // while a missing token merely warns (a publishing
+          // misconfiguration shouldn't crash a $20 finished run) and
+          // live-event failures never affect the exit code at all.
           process.exitCode = 1;
         }
 

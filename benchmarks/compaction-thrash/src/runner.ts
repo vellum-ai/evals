@@ -342,7 +342,7 @@ export async function runCompactionThrashScenario(
   const observeTickCount = input.observeTicks ?? DEFAULT_OBSERVE_TICKS;
   const totalTicks = seedTicks + observeTickCount;
 
-  const { progress, dispose } = createRunProgressLifecycle({
+  const { progress, dispose, flush } = createRunProgressLifecycle({
     runId: input.runId,
     userProgress: input.progress,
   });
@@ -585,5 +585,8 @@ export async function runCompactionThrashScenario(
     } catch {
       // Best-effort teardown.
     }
+    // Drain queued `progress.ndjson` appends — see `flush()`'s doc
+    // comment in progress-lifecycle.ts.
+    await flush();
   }
 }

@@ -28,7 +28,10 @@ import type {
   BenchmarkRunInput,
   BenchmarkRunResult,
 } from "../../../src/lib/benchmark";
-import { applyUnitLimit } from "../../../src/lib/benchmark";
+import {
+  applyUnitLimit,
+  invokeReportPlanned,
+} from "../../../src/lib/benchmark";
 import { getBenchmarksDir } from "../../../src/lib/catalog";
 import type { EvalProgressReporter } from "../../../src/lib/runner/progress";
 import { wasErrorReportedToProgress } from "../../../src/lib/runner/run-once";
@@ -128,33 +131,47 @@ export async function run(
 
   let anyFailed = false;
   try {
-    // Build the full (profile, item) task list, then fan out across
-    // `workers` slots. The trajectory reader is concurrency-safe
-    // (positional pread, no shared cursor), and each unit hatches its
-    // own container(s) with a unique runId, so parallel execution is
-    // safe as long as the host has the resources.
-    const tasks = profiles.flatMap((profile) =>
-      selected.map((item) => {
-        const id = runId(profile.id, item.questionId, timestampSuffix());
-        return async () => {
-          try {
-            await runLongMemEvalV2Unit({
-              profile,
-              item,
-              trajectoryReader,
-              runId: id,
-              sessionId: session,
-              sessionLabel,
-              cliArgv,
-              progress,
-            });
-          } catch (err) {
-            reportRunFailure(progress, err);
-            throw err;
-          }
-        };
-      }),
+    const pairs = profiles.flatMap((profile) =>
+      selected.map((item) => ({ profile, item })),
     );
+
+    // Planned-row testId is `item.questionId` (see invokeReportPlanned's
+    // contract). invokeReportPlanned swallows reporter failures, but this
+    // stays inside the try/finally so nothing between here and the runs
+    // can leak the trajectory file handle.
+    await invokeReportPlanned(
+      input,
+      pairs.map(({ profile, item }) => ({
+        testId: item.questionId,
+        profileId: profile.id,
+      })),
+    );
+
+    // Fan the task list out across `workers` slots. The trajectory
+    // reader is concurrency-safe (positional pread, no shared cursor),
+    // and each unit hatches its own container(s) with a unique runId,
+    // so parallel execution is safe as long as the host has the
+    // resources.
+    const tasks = pairs.map(({ profile, item }) => {
+      const id = runId(profile.id, item.questionId, timestampSuffix());
+      return async () => {
+        try {
+          await runLongMemEvalV2Unit({
+            profile,
+            item,
+            trajectoryReader,
+            runId: id,
+            sessionId: session,
+            sessionLabel,
+            cliArgv,
+            progress,
+          });
+        } catch (err) {
+          reportRunFailure(progress, err);
+          throw err;
+        }
+      };
+    });
 
     const result = await runWithConcurrency(tasks, input.workers ?? 1);
     anyFailed = result.anyFailed;

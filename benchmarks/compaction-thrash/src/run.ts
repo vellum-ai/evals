@@ -21,7 +21,10 @@ import type {
   BenchmarkRunInput,
   BenchmarkRunResult,
 } from "../../../src/lib/benchmark.js";
-import { applyUnitLimit } from "../../../src/lib/benchmark.js";
+import {
+  applyUnitLimit,
+  invokeReportPlanned,
+} from "../../../src/lib/benchmark.js";
 import { listBenchmarkUnitIds } from "../../../src/lib/catalog.js";
 import type { EvalProgressReporter } from "../../../src/lib/runner/progress.js";
 import { wasErrorReportedToProgress } from "../../../src/lib/runner/run-once.js";
@@ -96,30 +99,42 @@ export async function run(
   const seedTicks = resolveTickCount("EVALS_COMPACTION_SEED_TICKS", 20);
   const observeTicks = resolveTickCount("EVALS_COMPACTION_OBSERVE_TICKS", 10);
 
-  let anyFailed = false;
-  const tasks = profiles.flatMap((profile) =>
-    scenarioIds.map((scenarioId) => {
-      const id = runId(profile.id, scenarioId, timestampSuffix());
-      return async () => {
-        try {
-          await runCompactionThrashScenario({
-            profile,
-            scenarioId,
-            runId: id,
-            sessionId: session,
-            sessionLabel,
-            cliArgv,
-            progress,
-            seedTicks,
-            observeTicks,
-          });
-        } catch (err) {
-          reportRunFailure(progress, err);
-          throw err;
-        }
-      };
-    }),
+  const pairs = profiles.flatMap((profile) =>
+    scenarioIds.map((scenarioId) => ({ profile, scenarioId })),
   );
+
+  // Planned-row testId is the scenario id (see invokeReportPlanned's
+  // contract).
+  await invokeReportPlanned(
+    input,
+    pairs.map(({ profile, scenarioId }) => ({
+      testId: scenarioId,
+      profileId: profile.id,
+    })),
+  );
+
+  let anyFailed = false;
+  const tasks = pairs.map(({ profile, scenarioId }) => {
+    const id = runId(profile.id, scenarioId, timestampSuffix());
+    return async () => {
+      try {
+        await runCompactionThrashScenario({
+          profile,
+          scenarioId,
+          runId: id,
+          sessionId: session,
+          sessionLabel,
+          cliArgv,
+          progress,
+          seedTicks,
+          observeTicks,
+        });
+      } catch (err) {
+        reportRunFailure(progress, err);
+        throw err;
+      }
+    };
+  });
 
   const result = await runWithConcurrency(tasks, input.workers ?? 1);
   anyFailed = result.anyFailed;

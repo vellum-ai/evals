@@ -22,7 +22,7 @@ is built and published in CI (ATL-932). This directory only authors the image.
 
 The entrypoint is `start.sh`. On `docker run` it:
 
-1. requires `ANTHROPIC_API_KEY` (the only runtime credential; fail-fast);
+1. requires `ANTHROPIC_API_KEY` (the only required credential; fail-fast);
 2. brings up the inner `dockerd` and waits for its socket;
 3. provisions the recording CA to `/etc/eval-pod/recording-ca.pem` (the path the
    runtime bind-mounts into the species container's trust store);
@@ -44,7 +44,7 @@ docker buildx build --platform linux/amd64 \
 
 ## Run locally for testing
 
-The nested `dockerd` requires `--privileged`. The only secret is injected at
+The nested `dockerd` requires `--privileged`. Secrets are injected at
 runtime; nothing is baked into the image:
 
 ```sh
@@ -84,8 +84,18 @@ docker run --rm --entrypoint evals eval-pod:local benchmarks list
 
 ## Secrets
 
-Only `ANTHROPIC_API_KEY` is consumed, injected at runtime by the launcher.
-Nothing is baked into the image. The LongMemEval OpenAI judge key is deferred.
+`ANTHROPIC_API_KEY` is the only required credential, injected at runtime by
+the launcher. Nothing is baked into the image. The LongMemEval OpenAI judge
+key is deferred.
+
+The launcher may also inject these optional env vars for live results:
+
+- `EVAL_RESULTS_UPLOAD_URL` — enables live run-event posting during the run
+  and post-run auto-publish of the session bundle to the QA dashboard.
+- `EVAL_RESULTS_SESSION_ID` — pins the harness session id so the launcher's
+  run id and the uploaded bundle id coincide.
+- `QA_AUTH_TOKEN` — second runtime secret; Bearer token authenticating the
+  event posts and the bundle upload.
 
 ## Out of scope
 

@@ -48,6 +48,18 @@ export const BenchmarkManifestSchema = z.object({
 export type BenchmarkManifest = z.infer<typeof BenchmarkManifestSchema>;
 
 /**
+ * One planned (test, profile) execution in a benchmark run. `testId`
+ * is the id the benchmark later stamps into that unit's `RunMetadata`
+ * (`test.id` for personal-intelligence, `item.questionId` for
+ * longmemeval-v2, `scenarioId` for compaction-thrash) — consumers
+ * match `execution_*` events to planned rows by `(testId, profileId)`.
+ */
+export interface PlannedExecution {
+  testId: string;
+  profileId: string;
+}
+
+/**
  * Shared input to every benchmark's `run()` method. The CLI builds one
  * of these from its parsed options and hands it to `benchmark.run()` —
  * each benchmark module decides how to translate it into a concrete
@@ -107,6 +119,14 @@ export interface BenchmarkRunInput {
    * the resources.
    */
   workers: number | undefined;
+  /**
+   * Optional hook announcing the run's full planned test×profile
+   * matrix. `undefined` in local runs — benchmarks must tolerate its
+   * absence. Benchmarks invoke it via {@link invokeReportPlanned},
+   * whose doc comment is the canonical description of when the hook
+   * fires and its await/fail-soft contract.
+   */
+  reportPlanned?: (planned: PlannedExecution[]) => void | Promise<void>;
 }
 
 /**
@@ -119,6 +139,35 @@ export interface BenchmarkRunInput {
 export function applyUnitLimit<T>(units: T[], limit: number | undefined): T[] {
   if (limit === undefined) return units;
   return units.slice(0, limit);
+}
+
+/**
+ * Invoke a benchmark input's optional {@link BenchmarkRunInput.reportPlanned}
+ * hook. Shared by every benchmark's `run()` so the seam has one contract:
+ *
+ * - Called at most once per run, after unit selection
+ *   (filter/experimental-exclusion/limit applied) and before the first
+ *   execution starts, so callers (e.g. the qa-dashboard live-events wiring
+ *   in `commands/run.ts`) can render pending rows up front.
+ * - Each planned row's `testId` is the same id the runner stamps into that
+ *   unit's `RunMetadata`, so live-progress consumers can match execution
+ *   events to planned rows by (testId, profileId).
+ * - The invocation is awaited — an async reporter (e.g. one persisting a
+ *   `run_started` event) settles before the first execution starts and is
+ *   never left unhandled — but a throwing/rejecting reporter is logged and
+ *   never aborts the run: the hook is an inert observability seam, not a
+ *   gate.
+ */
+export async function invokeReportPlanned(
+  input: Pick<BenchmarkRunInput, "reportPlanned">,
+  planned: PlannedExecution[],
+): Promise<void> {
+  try {
+    await input.reportPlanned?.(planned);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[evals] reportPlanned reporter failed: ${message}`);
+  }
 }
 
 /** Result of a `benchmark.run()` invocation. */

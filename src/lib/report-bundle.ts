@@ -133,6 +133,18 @@ const renderStatic = (input: Parameters<typeof renderReportPage>[0]): string =>
   rewriteReportLinks(renderReportPage(input, { readOnly: true }));
 
 /**
+ * Thrown when a requested session has no runs on disk (e.g. every
+ * execution failed before producing artifacts). Typed so callers can
+ * distinguish "no such session" from a real bundling/upload failure.
+ */
+export class NoSessionError extends Error {
+  constructor(sessionId: string) {
+    super(`No session found for ${sessionId}`);
+    this.name = "NoSessionError";
+  }
+}
+
+/**
  * Builds the in-memory file tree for a session's bundle. Reads run artifacts
  * via the same report-data layer the local server uses, so the exported pages
  * are byte-for-byte the server's pages with links rewritten.
@@ -140,7 +152,7 @@ const renderStatic = (input: Parameters<typeof renderReportPage>[0]): string =>
 export async function buildRunBundle(sessionId: string): Promise<BundleFile[]> {
   const session = await readReportSession(sessionId);
   if (!session) {
-    throw new Error(`No session found for ${sessionId}`);
+    throw new NoSessionError(sessionId);
   }
 
   const files: BundleFile[] = [

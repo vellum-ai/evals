@@ -15,11 +15,12 @@ import { dirname } from "node:path";
 
 import type { Command } from "commander";
 
+import { pushBundleToUrl } from "../lib/bundle-push";
 import {
-  buildBundleBuffer,
   buildRunBundle,
   isBundleOutput,
   isHttpUrlOut,
+  NoSessionError,
   writeBundleTar,
 } from "../lib/report-bundle";
 import {
@@ -85,7 +86,13 @@ export function registerExportCommand(program: Command): void {
     )
     .action(async (opts: { session: string; out: string }) => {
       if (isHttpUrlOut(opts.out)) {
-        await pushBundleToUrl(opts.session, opts.out);
+        const { runId, viewUrl } = await pushBundleToUrl(
+          opts.session,
+          opts.out,
+        );
+        console.log(
+          `Pushed session ${opts.session} → ${viewUrl} (run id: ${runId})`,
+        );
         return;
       }
 
@@ -100,7 +107,7 @@ export function registerExportCommand(program: Command): void {
 
       const session = await readReportSession(opts.session);
       if (!session) {
-        throw new Error(`No session found for ${opts.session}`);
+        throw new NoSessionError(opts.session);
       }
 
       const records: ExportRecord[] = [
@@ -153,55 +160,4 @@ export function registerExportCommand(program: Command): void {
       await writeFile(opts.out, encodeJsonl(records), "utf8");
       console.log(`Exported ${records.length} records to ${opts.out}`);
     });
-}
-
-/**
- * Builds a session bundle and POSTs it to a QA dashboard's upload endpoint.
- * The `--out` URL (e.g. `https://qa.vellum.ai`) is resolved to
- * `<origin>/api/evals/upload`. Auth uses the `QA_AUTH_TOKEN` env var as a
- * Bearer token.
- */
-async function pushBundleToUrl(
-  sessionId: string,
-  outUrl: string,
-): Promise<void> {
-  const authToken = process.env.QA_AUTH_TOKEN;
-  if (!authToken) {
-    throw new Error(
-      "QA_AUTH_TOKEN is not set — export to a file instead, or set the " +
-        "token env var to push directly to the QA dashboard.",
-    );
-  }
-
-  const uploadUrl = outUrl.replace(/\/+$/, "") + "/api/evals/upload";
-
-  console.log(`Bundling session ${sessionId}…`);
-  const files = await buildRunBundle(sessionId);
-  const buffer = await buildBundleBuffer(files);
-  console.log(`Built bundle (${files.length} files, ${buffer.length} bytes)`);
-
-  const formData = new FormData();
-  formData.append(
-    "file",
-    new Blob([new Uint8Array(buffer)], { type: "application/gzip" }),
-    "bundle.tar.gz",
-  );
-
-  const response = await fetch(uploadUrl, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${authToken}` },
-    body: formData,
-  });
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(
-      `Upload failed (${response.status} ${response.statusText}): ${body}`,
-    );
-  }
-
-  const result = (await response.json()) as { id?: string; sessionId?: string };
-  const runId = result.id ?? result.sessionId ?? sessionId;
-  console.log(`Pushed session ${sessionId} → ${outUrl} (run id: ${runId})`);
-  console.log(`View at: ${outUrl.replace(/\/+$/, "")}/evals/runs/${runId}`);
 }

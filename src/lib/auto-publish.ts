@@ -1,0 +1,75 @@
+/**
+ * Post-run auto-publish of the session bundle to the QA dashboard.
+ *
+ * Gated on the same launcher env as live run events: with
+ * `EVAL_RESULTS_UPLOAD_URL` unset the run behaves byte-identically to a
+ * plain local run. This module NEVER throws — publishing is a delivery
+ * concern layered on top of a finished eval, so each outcome is reported
+ * as a status the caller can map to an exit-code policy.
+ */
+import { pushBundleToUrl } from "./bundle-push";
+import { readDashboardEnv } from "./dashboard-env";
+import { NoSessionError } from "./report-bundle";
+
+type AutoPublishResult =
+  | "disabled"
+  | "skipped-no-token"
+  | "published"
+  | "failed";
+
+/**
+ * Publish the session bundle when the launcher env asks for it.
+ *
+ * - `EVAL_RESULTS_UPLOAD_URL` unset/whitespace → `"disabled"`, silently.
+ * - URL set but `QA_AUTH_TOKEN` unset/whitespace → loud warning (the
+ *   results will never reach the dashboard) → `"skipped-no-token"`.
+ * - Both set → push the bundle; `"published"` on success (logging the
+ *   view URL), `"failed"` + console.error on any throw.
+ */
+export async function autoPublishSession(input: {
+  sessionId: string;
+  env?: NodeJS.ProcessEnv;
+  push?: typeof pushBundleToUrl;
+}): Promise<AutoPublishResult> {
+  const push = input.push ?? pushBundleToUrl;
+
+  // Policy: the URL alone activates publishing; a missing token is a
+  // loud misconfiguration warning rather than a silent no-op.
+  const { baseUrl, authToken } = readDashboardEnv(input.env);
+  if (!baseUrl) return "disabled";
+
+  if (!authToken) {
+    console.warn(
+      "[evals] EVAL_RESULTS_UPLOAD_URL is set but QA_AUTH_TOKEN is missing — " +
+        "skipping bundle publish;\n" +
+        `[evals] results for session ${input.sessionId} will NOT appear on the dashboard.\n` +
+        "[evals] Set QA_AUTH_TOKEN (or run `evals export --out <url>` manually) to publish.",
+    );
+    return "skipped-no-token";
+  }
+
+  try {
+    // Pass the trimmed URL through as-is (pushBundleToUrl normalizes
+    // trailing slashes internally) and the token explicitly so this
+    // function doesn't silently re-read env.
+    const { viewUrl } = await push(input.sessionId, baseUrl, { authToken });
+    console.log(`[evals] published session ${input.sessionId} → ${viewUrl}`);
+    return "published";
+  } catch (error) {
+    if (error instanceof NoSessionError) {
+      // A session that should have produced runs but has none on disk is a
+      // failure state, but not an upload failure — say so plainly instead
+      // of the generic publish-failed message.
+      console.error(
+        `[evals] nothing to publish for session ${input.sessionId} — no runs ` +
+          "were recorded on disk (all executions failed before producing artifacts)",
+      );
+      return "failed";
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[evals] bundle publish failed for session ${input.sessionId}: ${message}`,
+    );
+    return "failed";
+  }
+}

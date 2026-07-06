@@ -65,9 +65,16 @@ export async function ensureDatasetAvailable(
   ];
   const present: string[] = [];
   const missing: string[] = [];
-  for (const file of requiredFiles) {
-    if (await pathExists(join(dataRoot, file))) present.push(file);
-    else missing.push(file);
+  try {
+    for (const file of requiredFiles) {
+      if (await pathExists(join(dataRoot, file))) present.push(file);
+      else missing.push(file);
+    }
+  } catch (err) {
+    // pathExists rethrows non-ENOENT stat failures (EACCES on an unreadable
+    // dataRoot, ENOTDIR when a path component is a regular file). Surface
+    // them through the actionable wrapper instead of as a bare errno.
+    throw wrapBootstrapError(err, dataRoot);
   }
 
   if (missing.length === 0) {
@@ -152,7 +159,10 @@ function isReadOnlyFsError(err: unknown): boolean {
   return false;
 }
 
-/** Actionable wrapper shared by the download and fast-path fallback failures. */
+/**
+ * Actionable wrapper shared by the completeness-check, download, and
+ * fast-path fallback failures.
+ */
 function wrapBootstrapError(err: unknown, dataRoot: string): Error {
   const cause = err instanceof Error ? err.message : String(err);
   return new Error(

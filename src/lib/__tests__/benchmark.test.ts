@@ -1,8 +1,7 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
 import {
   applyUnitLimit,
@@ -10,19 +9,19 @@ import {
   loadBenchmark,
   type PlannedExecution,
 } from "../benchmark";
+import {
+  makeTempCatalogDir,
+  restoreCatalogEnvAfterEach,
+} from "./helpers/catalog-dirs";
 
-const originalBenchmarksDir = process.env.EVALS_BENCHMARKS_DIR;
+restoreCatalogEnvAfterEach();
 
-afterEach(() => {
-  if (originalBenchmarksDir === undefined)
-    delete process.env.EVALS_BENCHMARKS_DIR;
-  else process.env.EVALS_BENCHMARKS_DIR = originalBenchmarksDir;
-});
+const makeBenchmarksDir = () =>
+  makeTempCatalogDir("EVALS_BENCHMARKS_DIR", "evals-benchmarks-");
 
 describe("loadBenchmark", () => {
   test("resolves manifest and units directory", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "evals-benchmarks-"));
-    process.env.EVALS_BENCHMARKS_DIR = dir;
+    const dir = await makeBenchmarksDir();
 
     await mkdir(join(dir, "longmemeval-v2", "items"), { recursive: true });
     await writeFile(
@@ -52,8 +51,7 @@ describe("loadBenchmark", () => {
     // for the two real benchmarks; the test asserts the contract
     // (typeof === "function") rather than calling run() since that
     // would require a full hatched profile.
-    const dir = await mkdtemp(join(tmpdir(), "evals-benchmarks-"));
-    process.env.EVALS_BENCHMARKS_DIR = dir;
+    const dir = await makeBenchmarksDir();
 
     for (const id of ["longmemeval-v2", "personal-intelligence"]) {
       const unitDirName = id === "longmemeval-v2" ? "items" : "tests";
@@ -75,8 +73,7 @@ describe("loadBenchmark", () => {
     // manifest, but no `src/run.ts` at the conventional location in
     // the evals source tree, must surface a clear, conventional
     // error pointing at the file the operator needs to create.
-    const dir = await mkdtemp(join(tmpdir(), "evals-benchmarks-"));
-    process.env.EVALS_BENCHMARKS_DIR = dir;
+    const dir = await makeBenchmarksDir();
     await mkdir(join(dir, "ghost-benchmark", "items"), { recursive: true });
     await writeFile(
       join(dir, "ghost-benchmark", "manifest.json"),
@@ -94,8 +91,7 @@ describe("loadBenchmark", () => {
   });
 
   test("rejects ids that escape the benchmarks directory", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "evals-benchmarks-"));
-    process.env.EVALS_BENCHMARKS_DIR = dir;
+    await makeBenchmarksDir();
 
     await expect(loadBenchmark("bad_id")).rejects.toThrow(
       "Invalid benchmark id",
@@ -103,8 +99,7 @@ describe("loadBenchmark", () => {
   });
 
   test("reports missing manifest with a helpful path", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "evals-benchmarks-"));
-    process.env.EVALS_BENCHMARKS_DIR = dir;
+    const dir = await makeBenchmarksDir();
     await mkdir(join(dir, "no-manifest"), { recursive: true });
 
     await expect(loadBenchmark("no-manifest")).rejects.toThrow(
@@ -113,8 +108,7 @@ describe("loadBenchmark", () => {
   });
 
   test("reports schema-failed manifests with field-level issues", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "evals-benchmarks-"));
-    process.env.EVALS_BENCHMARKS_DIR = dir;
+    const dir = await makeBenchmarksDir();
     await mkdir(join(dir, "bad-manifest"), { recursive: true });
     await writeFile(
       join(dir, "bad-manifest", "manifest.json"),
@@ -128,8 +122,7 @@ describe("loadBenchmark", () => {
   });
 
   test("reports malformed JSON manifests", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "evals-benchmarks-"));
-    process.env.EVALS_BENCHMARKS_DIR = dir;
+    const dir = await makeBenchmarksDir();
     await mkdir(join(dir, "broken"), { recursive: true });
     await writeFile(join(dir, "broken", "manifest.json"), "{not json", "utf8");
 

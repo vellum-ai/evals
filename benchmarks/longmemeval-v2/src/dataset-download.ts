@@ -14,7 +14,10 @@ import { pathExists } from "../../../src/lib/fs";
 
 export const LONGMEMEVAL_HF_REPO = "xiaowu0162/longmemeval-v2";
 
-const INSTALL_HINT = 'Install it with: pip install -U "huggingface_hub[cli]"';
+// Pinned <1.0: huggingface_hub 1.x replaces `huggingface-cli` with a stub
+// that exits 1, so an unpinned install reproduces the failure.
+const INSTALL_HINT =
+  'Install it with: pip install -U "huggingface_hub[cli]<1.0"';
 
 /**
  * Fetch the raw dataset from Hugging Face into dataRoot. Idempotent:

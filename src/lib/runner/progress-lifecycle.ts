@@ -21,7 +21,7 @@
  * `benchmarks/longmemeval-v2/src/runner.ts`. This module is that
  * extract. Callers do:
  *
- *     const { progress, dispose } = createRunProgressLifecycle({
+ *     const { progress, dispose, flush } = createRunProgressLifecycle({
  *       runId: input.runId,
  *       userProgress: input.progress,
  *     });
@@ -30,11 +30,19 @@
  *       // ... use `progress` everywhere ...
  *     } finally {
  *       dispose();
- *       // ... rest of cleanup ...
+ *       // ... rest of cleanup (may still emit through `progress`) ...
+ *       await flush();
  *     }
  *
  * `dispose()` is idempotent so a finally-block that also runs through
  * a re-throw path doesn't have to guard against double-clear.
+ *
+ * `await flush()` at the end of the finally is what lets callers up
+ * the stack (`commands/run.ts` auto-publish) treat "the runner's
+ * promise resolved" as "every progress event is on disk" — the
+ * bundle snapshot uploaded to the dashboard is taken as soon as
+ * `benchmark.run` resolves, so a still-pending append here would be
+ * silently missing from the published `progress.ndjson`.
  */
 import { setInterval as nodeSetInterval } from "node:timers";
 
@@ -82,6 +90,17 @@ export interface RunProgressLifecycle {
    * but they don't have to add a guard.
    */
   dispose: () => void;
+  /**
+   * Resolves once every progress event emitted so far has been
+   * appended to `progress.ndjson` (or its append failed — failures
+   * are swallowed by the chain, so `flush()` never rejects and can't
+   * mask the run's real error in a `finally`). Await this at the END
+   * of the runner's finally block, after the last `progress()` call:
+   * once it resolves, the run's promise resolving implies the on-disk
+   * log is complete, which the auto-publish bundle snapshot in
+   * `commands/run.ts` depends on.
+   */
+  flush: () => Promise<void>;
 }
 
 /**
@@ -145,5 +164,9 @@ export function createRunProgressLifecycle(
       disposed = true;
       clearInterval(heartbeatInterval);
     },
+    // Snapshot of the chain at call time — appends queued before the
+    // call are on disk when it resolves. Every link ends in
+    // `.catch(() => undefined)`, so this never rejects.
+    flush: (): Promise<void> => appendChain,
   };
 }

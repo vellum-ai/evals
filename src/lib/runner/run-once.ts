@@ -831,5 +831,14 @@ export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
         });
       }
     }
+    // Last thing in the finally, after the shutdown progress events
+    // above: wait for every queued `progress.ndjson` append to land on
+    // disk. `commands/run.ts` snapshots + uploads the results bundle
+    // as soon as `benchmark.run` resolves, so a still-pending append
+    // here would be missing from the published dashboard logs even
+    // though the local file finishes moments later. `flush()` never
+    // rejects (the chain swallows append failures), so this can't mask
+    // a re-thrown run error.
+    await lifecycle.flush();
   }
 }

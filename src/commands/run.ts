@@ -391,6 +391,14 @@ export function registerRunCommand(program: Command): void {
         // meaningful artifacts, and that path already exits non-zero).
         // With no env vars set, autoPublishSession returns "disabled"
         // silently and behavior is byte-identical to before.
+        //
+        // Snapshot consistency: the bundle is captured the moment we
+        // get here, so it relies on the runners having fully drained
+        // their fire-and-forget `progress.ndjson` append chains before
+        // resolving. Each runner `await flush()`es its progress
+        // lifecycle at the end of its finally block (see
+        // src/lib/runner/progress-lifecycle.ts) — so `benchmark.run`
+        // resolving implies all progress writes are on disk.
         const publishResult = await autoPublishSession({ sessionId: session });
         if (publishResult === "failed") {
           // A green Job with no uploaded results is worse than a red one —

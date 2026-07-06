@@ -2,7 +2,8 @@
   "entry": [
     "src/**/*.test.ts",
     "benchmarks/*/src/**/*.test.ts",
-    "benchmarks/*/src/run.ts"
+    "benchmarks/*/src/run.ts",
+    "scripts/*.ts"
   ],
   "project": ["src/**/*.ts", "src/**/*.tsx", "benchmarks/*/src/**/*.ts"]
 }

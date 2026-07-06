@@ -213,13 +213,73 @@ jobs:
           cache-from: type=gha,scope=eval-pod
           cache-to: type=gha,mode=max,ignore-error=true,scope=eval-pod
 
+      # ── Eval catalog ──────────────────────────────────────────────────
+      # Publish a machine-readable benchmark/profile inventory next to the
+      # image so the qa dashboard's eval-trigger panel reads what THIS build
+      # actually ships instead of hardcoding a drifted list. These steps sit
+      # AFTER the image push on purpose: the push has already succeeded, so a
+      # catalog failure fails the run visibly but can never un-publish the
+      # image. Accordingly there is no failure suppression anywhere below —
+      # no continue-on-error, no `|| true`.
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3"
+
+      - name: Generate eval catalog
+        env:
+          GIT_SHA: ${{ github.sha }}
+          # The immutable :<sha> image tag. On refresh_only builds the sha
+          # tag is not re-pushed, but this exact commit's pinned image was
+          # already published under it, so the value stays correct — the
+          # re-upload just refreshes generatedAt/latest.json, mirroring the
+          # image `latest` move.
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          bun install
+          bun scripts/generate-catalog.ts > catalog.json
+          # Guard against an empty/garbage artifact reaching the bucket.
+          bun -e 'const c = await Bun.file("catalog.json").json();
+            if (!Array.isArray(c.benchmarks) || c.benchmarks.length === 0) throw new Error("catalog has no benchmarks");
+            if (!Array.isArray(c.profiles) || c.profiles.length === 0) throw new Error("catalog has no profiles");'
+          cat catalog.json
+
+      - name: Upload eval catalog to GCS
+        id: catalog
+        env:
+          # The qa results bucket the dashboard reads. The workflow SA is
+          # granted write on the eval-catalog/ prefix via Terraform.
+          CATALOG_BUCKET: vellum-nonprod-qa-artifacts
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+          REFRESH_ONLY: ${{ needs.check-for-new-commits.outputs.refresh_only }}
+        run: |
+          set -euo pipefail
+          # Per the frozen contract, eval-catalog/<sha>.json is written on
+          # every build (idempotent overwrite on refresh).
+          gcloud storage cp catalog.json "gs://${CATALOG_BUCKET}/eval-catalog/${SHA}.json" \
+            --content-type=application/json
+          # latest.json mirrors the `latest` image tag: moved on main-ref
+          # content builds and on refresh builds (refresh is main-only).
+          if [ "$REFRESH_ONLY" = "true" ] || [ "$REF" = "refs/heads/main" ]; then
+            gcloud storage cp catalog.json "gs://${CATALOG_BUCKET}/eval-catalog/latest.json" \
+              --content-type=application/json --cache-control=no-cache
+            echo "summary=\`eval-catalog/${SHA}.json\`, \`eval-catalog/latest.json\`" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Non-main ref (${REF}) — wrote eval-catalog/${SHA}.json only; latest.json not moved."
+            echo "summary=\`eval-catalog/${SHA}.json\` (non-main ref — \`latest.json\` not moved)" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Summary
         env:
           TAG_SUMMARY: ${{ steps.tags.outputs.summary }}
+          CATALOG_SUMMARY: ${{ steps.catalog.outputs.summary }}
         run: |
           {
             echo "## eval-pod image published"
             echo ""
             echo "**Repo:** \`us-central1-docker.pkg.dev/vellum-nonprod/eval-pod-images/eval-pod\`"
             echo "**Tags:** ${TAG_SUMMARY}"
+            echo "**Catalog:** ${CATALOG_SUMMARY}"
           } >> "$GITHUB_STEP_SUMMARY"

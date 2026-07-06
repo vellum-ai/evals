@@ -40,7 +40,9 @@ function countAssistantResponses(
 }
 
 /** Wall-clock run duration in ms, when both timestamps were recorded. */
-function runtimeMs(metadata: RunMetadata | undefined): number | undefined {
+export function runtimeMs(
+  metadata: RunMetadata | undefined,
+): number | undefined {
   if (!metadata?.startedAt || !metadata?.completedAt) return undefined;
   const start = Date.parse(metadata.startedAt);
   const end = Date.parse(metadata.completedAt);
@@ -290,7 +292,7 @@ export interface ReportTestInSession {
   }>;
 }
 
-function scoreTotal(metrics: MetricResult[]): number {
+export function scoreTotal(metrics: MetricResult[]): number {
   if (metrics.length === 0) return 0;
   const weight = 1 / metrics.length;
   return metrics.reduce((sum, metric) => sum + metric.score * weight, 0);

@@ -8,11 +8,17 @@ import {
 import {
   abandonAllRunningRunsSync,
   scavengeAbandonedRuns,
+  setRunMetadataObserver,
 } from "../lib/metrics";
 import { reapAbandonedEvalContainers } from "../lib/adapters/docker-reaper";
 import { loadBenchmark } from "../lib/benchmark";
 import { DEFAULT_BENCHMARK_ID } from "../lib/catalog";
 import { loadProfile } from "../lib/profile";
+import {
+  createRunEventEmitter,
+  resolveRunEventsConfig,
+} from "../lib/run-events";
+import { createRunEventsBridge } from "../lib/run-events-bridge";
 import { resolveSessionId } from "../lib/session-id";
 import { openInBrowser, startReportServer } from "./server";
 
@@ -211,6 +217,22 @@ export function registerRunCommand(program: Command): void {
         });
         const sessionLabel = opts.label;
 
+        // Live results: when the launcher env (EVAL_RESULTS_UPLOAD_URL +
+        // QA_AUTH_TOKEN) is present, mirror this run's lifecycle to the
+        // qa dashboard — run_started (planned matrix) via reportPlanned,
+        // execution_started/execution_completed via the run-metadata
+        // observer seam, run_finished after everything settles. With
+        // either env var missing, `eventsConfig` is undefined and the
+        // run behaves byte-identically to before.
+        const eventsConfig = resolveRunEventsConfig();
+        const emitter = eventsConfig
+          ? createRunEventEmitter({ config: eventsConfig, sessionId: session })
+          : undefined;
+        const bridge = emitter
+          ? createRunEventsBridge({ emitter, sessionId: session })
+          : undefined;
+        if (bridge) setRunMetadataObserver(bridge.observer);
+
         // Snapshot argv at the top of the action handler — Commander
         // doesn't mutate `process.argv` but a downstream library or a
         // signal handler conceivably could, and we want every run in
@@ -223,18 +245,44 @@ export function registerRunCommand(program: Command): void {
         // ingest→ask over `BenchmarkItem`, …). The CLI just hands
         // it the shared input shape; no `if (id === …)` ladder, no
         // manifest "driver" enum.
-        const { anyFailed } = await benchmark.run({
-          profiles,
-          filterIds,
-          filterFlag: filter,
-          limit: opts.limit,
-          session,
-          sessionLabel,
-          cliArgv,
-          progress,
-          maxTurns: opts.maxTurns,
-          workers: opts.workers,
-        });
+        let anyFailed = false;
+        let threw = true;
+        try {
+          const result = await benchmark.run({
+            profiles,
+            filterIds,
+            filterFlag: filter,
+            limit: opts.limit,
+            session,
+            sessionLabel,
+            cliArgv,
+            progress,
+            maxTurns: opts.maxTurns,
+            workers: opts.workers,
+            reportPlanned: emitter
+              ? (planned) => emitter.runStarted(opts.benchmark, planned)
+              : undefined,
+          });
+          anyFailed = result.anyFailed;
+          threw = false;
+        } finally {
+          // Flush live events whether the run returned or threw (the
+          // awaits below complete before a throw propagates out of this
+          // block). Ordering satisfies the frozen contract — run_finished
+          // arrives after every execution event: the bridge's pending
+          // execution_completed builds enqueue onto the emitter chain
+          // asynchronously, so first `await bridge.settle()` (all
+          // execution_completed enqueued), THEN enqueue run_finished,
+          // then `await emitter.settle()` to drain the sequential chain.
+          // A later PR auto-publishes the report bundle after this block,
+          // before --serve.
+          if (emitter && bridge) {
+            await bridge.settle();
+            emitter.runFinished(threw || anyFailed ? "failed" : "succeeded");
+            await emitter.settle();
+            setRunMetadataObserver(undefined);
+          }
+        }
 
         if (anyFailed) {
           process.exitCode = 1;

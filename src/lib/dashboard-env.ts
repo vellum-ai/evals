@@ -13,7 +13,7 @@
  *     fallback for direct `evals export --out <url>` use; missing throws.
  */
 
-export interface DashboardEnv {
+interface DashboardEnv {
   /** Trimmed `EVAL_RESULTS_UPLOAD_URL`; `undefined` when unset/blank. */
   baseUrl?: string;
   /** Trimmed `QA_AUTH_TOKEN`; `undefined` when unset/blank. */

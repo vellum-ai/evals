@@ -121,17 +121,10 @@ export interface BenchmarkRunInput {
   workers: number | undefined;
   /**
    * Optional hook announcing the run's full planned test×profile
-   * matrix. Invoked at most once by the benchmark's run module after
-   * unit selection (filter/experimental-exclusion/limit applied) and
-   * before the first execution starts, so callers (e.g. the
-   * qa-dashboard live-events wiring in `commands/run.ts`) can render
-   * pending rows up front. `undefined` in local runs — benchmarks must
-   * tolerate its absence. Benchmarks invoke it via
-   * {@link invokeReportPlanned}, which `await`s the invocation — so an
-   * async reporter (e.g. one persisting a `run_started` event) settles
-   * before the first execution starts and is never left unhandled —
-   * but logs failures instead of rethrowing: the hook is an inert
-   * observability seam, and a broken reporter must never abort a run.
+   * matrix. `undefined` in local runs — benchmarks must tolerate its
+   * absence. Benchmarks invoke it via {@link invokeReportPlanned},
+   * whose doc comment is the canonical description of when the hook
+   * fires and its await/fail-soft contract.
    */
   reportPlanned?: (planned: PlannedExecution[]) => void | Promise<void>;
 }
@@ -151,9 +144,19 @@ export function applyUnitLimit<T>(units: T[], limit: number | undefined): T[] {
 /**
  * Invoke a benchmark input's optional {@link BenchmarkRunInput.reportPlanned}
  * hook. Shared by every benchmark's `run()` so the seam has one contract:
- * the invocation is awaited (an async reporter is ordered before the first
- * execution starts), but a throwing/rejecting reporter is logged and never
- * aborts the run — the hook is observability, not a gate.
+ *
+ * - Called at most once per run, after unit selection
+ *   (filter/experimental-exclusion/limit applied) and before the first
+ *   execution starts, so callers (e.g. the qa-dashboard live-events wiring
+ *   in `commands/run.ts`) can render pending rows up front.
+ * - Each planned row's `testId` is the same id the runner stamps into that
+ *   unit's `RunMetadata`, so live-progress consumers can match execution
+ *   events to planned rows by (testId, profileId).
+ * - The invocation is awaited — an async reporter (e.g. one persisting a
+ *   `run_started` event) settles before the first execution starts and is
+ *   never left unhandled — but a throwing/rejecting reporter is logged and
+ *   never aborts the run: the hook is an inert observability seam, not a
+ *   gate.
  */
 export async function invokeReportPlanned(
   input: Pick<BenchmarkRunInput, "reportPlanned">,

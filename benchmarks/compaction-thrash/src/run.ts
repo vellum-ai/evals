@@ -99,16 +99,12 @@ export async function run(
   const seedTicks = resolveTickCount("EVALS_COMPACTION_SEED_TICKS", 20);
   const observeTicks = resolveTickCount("EVALS_COMPACTION_OBSERVE_TICKS", 10);
 
-  // One (profile, scenario) cross product drives both the planned-matrix
-  // announcement and the task list. `testId` is the scenario id — the id
-  // the runner stamps into each unit's RunMetadata — so live-progress
-  // consumers can match execution events to planned rows by
-  // (testId, profileId).
   const pairs = profiles.flatMap((profile) =>
     scenarioIds.map((scenarioId) => ({ profile, scenarioId })),
   );
 
-  // Announce the planned matrix before anything executes.
+  // Planned-row testId is the scenario id (see invokeReportPlanned's
+  // contract).
   await invokeReportPlanned(
     input,
     pairs.map(({ profile, scenarioId }) => ({

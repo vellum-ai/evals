@@ -5,6 +5,7 @@ import {
   resolveRunEventsConfig,
   type RunEventsConfig,
 } from "../run-events";
+import { hangingFetch } from "./helpers";
 
 const config: RunEventsConfig = {
   baseUrl: "https://qa.example.com",
@@ -265,33 +266,6 @@ function scriptedFetch(script: Array<"fail" | "ok">): {
       : Promise.reject(new Error("connection refused"));
   }) as typeof fetch;
   return { callCount: () => calls, events, fetchImpl };
-}
-
-/**
- * A fetch stub simulating a dead dashboard: every POST hangs until its
- * AbortSignal fires. The timer behind AbortSignal.timeout() is unref'd, so
- * if the pending promise were the only work, Bun could exit the event loop
- * without ever firing it and settle() would hang. A real (ref'd) setTimeout
- * keeps the loop alive long enough for the abort to fire, and doubles as a
- * fallback rejection so a test can never hang.
- */
-function hangingFetch(timeoutMs: number): {
-  seenSignals: Array<AbortSignal | null | undefined>;
-  fetchImpl: typeof fetch;
-} {
-  const seenSignals: Array<AbortSignal | null | undefined> = [];
-  const fetchImpl = ((_url: unknown, init?: RequestInit) =>
-    new Promise<Response>((_resolve, reject) => {
-      seenSignals.push(init?.signal);
-      const fallback = setTimeout(() => {
-        reject(new Error("fake fetch: abort never fired"));
-      }, timeoutMs + 200);
-      init?.signal?.addEventListener("abort", () => {
-        clearTimeout(fallback);
-        reject(init.signal?.reason ?? new Error("aborted"));
-      });
-    })) as typeof fetch;
-  return { seenSignals, fetchImpl };
 }
 
 describe("fail-soft behavior", () => {

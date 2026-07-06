@@ -213,14 +213,64 @@ jobs:
           cache-from: type=gha,scope=eval-pod
           cache-to: type=gha,mode=max,ignore-error=true,scope=eval-pod
 
-      # ── Eval catalog ──────────────────────────────────────────────────
-      # Publish a machine-readable benchmark/profile inventory next to the
-      # image so the qa dashboard's eval-trigger panel reads what THIS build
-      # actually ships instead of hardcoding a drifted list. These steps sit
-      # AFTER the image push on purpose: the push has already succeeded, so a
-      # catalog failure fails the run visibly but can never un-publish the
-      # image. Accordingly there is no failure suppression anywhere below —
-      # no continue-on-error, no `|| true`.
+      - name: Summary
+        env:
+          TAG_SUMMARY: ${{ steps.tags.outputs.summary }}
+        run: |
+          {
+            echo "## eval-pod image published"
+            echo ""
+            echo "**Repo:** \`us-central1-docker.pkg.dev/vellum-nonprod/eval-pod-images/eval-pod\`"
+            echo "**Tags:** ${TAG_SUMMARY}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Eval catalog publish ────────────────────────────────────────────────
+  # Publish a machine-readable benchmark/profile inventory next to the image
+  # so the qa dashboard's eval-trigger panel reads what THIS build actually
+  # ships instead of hardcoding a drifted list.
+  #
+  # This is a SEPARATE dependent job — NOT tail steps of build-and-push — on
+  # purpose: the skip-if-idle gate above decides "was this commit already
+  # published?" by looking for a prior run whose *build-and-push job*
+  # concluded success. If catalog publishing lived inside build-and-push, a
+  # catalog failure after a successful image push would mark that job failed,
+  # the next hourly run would treat the commit as unpublished, and its
+  # content build would re-stamp the supposedly immutable :<sha> image tag
+  # with newly-resolved floating deps — exactly what the tags step above
+  # forbids. Isolating the catalog here keeps build-and-push's conclusion
+  # authoritative for the gate (the image really was pushed), while a catalog
+  # failure still fails the workflow run visibly — a silently stale catalog
+  # would defeat the purpose, so there is no failure suppression anywhere
+  # below: no continue-on-error, no `|| true`.
+  publish-catalog:
+    # check-for-new-commits is in `needs` for its refresh_only output;
+    # build-and-push guarantees an image was actually pushed first — a
+    # catalog must never describe an image that failed to publish. Gating on
+    # `result == 'success'` also skips this job when the idle gate cancels
+    # the run (build-and-push is then skipped, not successful).
+    needs: [check-for-new-commits, build-and-push]
+    if: ${{ needs.build-and-push.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Required: the WIF principal is bound to subject
+    # repo:vellum-ai/evals:environment:dev — OIDC is rejected without this.
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/304030683664/locations/global/workloadIdentityPools/github-pool-dev/providers/github-actions-provider-0
+          service_account: gha-evals-image-pusher@vellum-nonprod.iam.gserviceaccount.com
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -229,14 +279,23 @@ jobs:
       - name: Generate eval catalog
         env:
           GIT_SHA: ${{ github.sha }}
-          # The immutable :<sha> image tag. On refresh_only builds the sha
-          # tag is not re-pushed, but this exact commit's pinned image was
-          # already published under it, so the value stays correct — the
-          # re-upload just refreshes generatedAt/latest.json, mirroring the
-          # image `latest` move.
-          IMAGE_TAG: ${{ github.sha }}
+          REFRESH_ONLY: ${{ needs.check-for-new-commits.outputs.refresh_only }}
         run: |
           set -euo pipefail
+          # imageTag mirrors the tag the Docker step actually pushed for THIS
+          # build (see the tags step in build-and-push): a content build
+          # pushes the immutable :<sha> tag, while a refresh_only build
+          # pushes ONLY `latest` and leaves :<sha> untouched — so a refresh
+          # catalog must point consumers at `latest`, not at the stale pinned
+          # sha image. This refines the frozen contract: imageTag is "the tag
+          # pushed for this build" (<sha> on content builds, `latest` on
+          # refresh builds); the JSON shape is unchanged.
+          if [ "$REFRESH_ONLY" = "true" ]; then
+            IMAGE_TAG="latest"
+          else
+            IMAGE_TAG="$GIT_SHA"
+          fi
+          export IMAGE_TAG
           bun install
           bun scripts/generate-catalog.ts > catalog.json
           # Guard against an empty/garbage artifact reaching the bucket.
@@ -256,30 +315,42 @@ jobs:
           REFRESH_ONLY: ${{ needs.check-for-new-commits.outputs.refresh_only }}
         run: |
           set -euo pipefail
-          # Per the frozen contract, eval-catalog/<sha>.json is written on
-          # every build (idempotent overwrite on refresh).
-          gcloud storage cp catalog.json "gs://${CATALOG_BUCKET}/eval-catalog/${SHA}.json" \
-            --content-type=application/json
-          # latest.json mirrors the `latest` image tag: moved on main-ref
-          # content builds and on refresh builds (refresh is main-only).
-          if [ "$REFRESH_ONLY" = "true" ] || [ "$REF" = "refs/heads/main" ]; then
+          # The uploaded objects mirror the image tags pushed by THIS build,
+          # exactly like the Docker tags step:
+          #
+          # - Content build: write the per-commit eval-catalog/<sha>.json,
+          #   plus latest.json when on the main ref (a manual dispatch from a
+          #   non-main ref must not repoint latest.json, just as it must not
+          #   move the `latest` image tag).
+          # - Refresh build: the image push moved ONLY `latest` and left
+          #   :<sha> untouched, so update ONLY latest.json and do NOT
+          #   overwrite eval-catalog/<sha>.json — that object was already
+          #   written by this commit's content build and pins the immutable
+          #   sha image.
+          if [ "$REFRESH_ONLY" = "true" ]; then
             gcloud storage cp catalog.json "gs://${CATALOG_BUCKET}/eval-catalog/latest.json" \
               --content-type=application/json --cache-control=no-cache
-            echo "summary=\`eval-catalog/${SHA}.json\`, \`eval-catalog/latest.json\`" >> "$GITHUB_OUTPUT"
+            echo "summary=\`eval-catalog/latest.json\` (daily refresh — \`eval-catalog/${SHA}.json\` left untouched)" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::Non-main ref (${REF}) — wrote eval-catalog/${SHA}.json only; latest.json not moved."
-            echo "summary=\`eval-catalog/${SHA}.json\` (non-main ref — \`latest.json\` not moved)" >> "$GITHUB_OUTPUT"
+            gcloud storage cp catalog.json "gs://${CATALOG_BUCKET}/eval-catalog/${SHA}.json" \
+              --content-type=application/json
+            if [ "$REF" = "refs/heads/main" ]; then
+              gcloud storage cp catalog.json "gs://${CATALOG_BUCKET}/eval-catalog/latest.json" \
+                --content-type=application/json --cache-control=no-cache
+              echo "summary=\`eval-catalog/${SHA}.json\`, \`eval-catalog/latest.json\`" >> "$GITHUB_OUTPUT"
+            else
+              echo "::notice::Non-main ref (${REF}) — wrote eval-catalog/${SHA}.json only; latest.json not moved."
+              echo "summary=\`eval-catalog/${SHA}.json\` (non-main ref — \`latest.json\` not moved)" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Summary
         env:
-          TAG_SUMMARY: ${{ steps.tags.outputs.summary }}
           CATALOG_SUMMARY: ${{ steps.catalog.outputs.summary }}
         run: |
           {
-            echo "## eval-pod image published"
+            echo "## eval catalog published"
             echo ""
-            echo "**Repo:** \`us-central1-docker.pkg.dev/vellum-nonprod/eval-pod-images/eval-pod\`"
-            echo "**Tags:** ${TAG_SUMMARY}"
-            echo "**Catalog:** ${CATALOG_SUMMARY}"
+            echo "**Bucket:** \`vellum-nonprod-qa-artifacts\`"
+            echo "**Objects:** ${CATALOG_SUMMARY}"
           } >> "$GITHUB_STEP_SUMMARY"

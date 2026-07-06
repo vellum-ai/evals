@@ -6,6 +6,7 @@ import {
   relabelQuestions,
   LONGMEMEVAL_HF_REPO,
 } from "./dataset-download";
+import type { Tier } from "./loader";
 
 export const AUTO_DOWNLOAD_ENV = "EVALS_DATA_AUTO_DOWNLOAD";
 
@@ -15,22 +16,48 @@ interface EnsureDeps {
 }
 
 /**
- * Pod-only dataset bootstrap. When questions.jsonl is missing AND
- * EVALS_DATA_AUTO_DOWNLOAD=1, fetch + relabel the dataset before the
- * loader runs. Without the env var this is a strict no-op so local dev
- * keeps the loader's explicit "run data/download.ts" error. Safe on pod
- * retries: huggingface-cli hash-skips already-downloaded files and the
- * relabel transform is idempotent.
+ * Pod-only dataset bootstrap. The dataset counts as present only when
+ * EVERY file the selected run consumes exists — questions.jsonl, the
+ * selected tier's haystack mapping, and trajectories.jsonl. When any of
+ * them is missing AND EVALS_DATA_AUTO_DOWNLOAD=1, fetch + relabel the
+ * dataset before the loader runs. Without the env var this is a strict
+ * no-op so local dev keeps the loader's explicit "run data/download.ts"
+ * error.
+ *
+ * The completeness check is what makes interrupted-download retries
+ * self-heal: a partial download can leave questions.jsonl on disk while
+ * the haystack and/or the large trajectories.jsonl are still missing, and
+ * a bare questions.jsonl check would skip the retry and fall through to
+ * loader / trajectory-reader ENOENT errors. Safe on pod retries:
+ * huggingface-cli resumes/hash-skips already-downloaded files, the
+ * relabel transform is idempotent, and a re-download of hash-mismatched
+ * relabeled files is safely re-relabeled.
  */
 export async function ensureDatasetAvailable(
   dataRoot: string,
+  tier: Tier,
   deps: EnsureDeps = { download: downloadDataset, relabel: relabelQuestions },
 ): Promise<void> {
-  if (await existsFile(join(dataRoot, "questions.jsonl"))) return;
+  const requiredFiles = [
+    "questions.jsonl",
+    join("haystacks", `lme_v2_${tier}.json`),
+    "trajectories.jsonl",
+  ];
+  const present: string[] = [];
+  const missing: string[] = [];
+  for (const file of requiredFiles) {
+    if (await existsFile(join(dataRoot, file))) present.push(file);
+    else missing.push(file);
+  }
+  if (missing.length === 0) return;
   if (process.env[AUTO_DOWNLOAD_ENV] !== "1") return;
 
+  const why =
+    present.length > 0
+      ? `${present.join(", ")} present but ${missing.join(", ")} missing — resuming download`
+      : `${missing.join(", ")} missing at ${dataRoot}`;
   console.error(
-    `[longmemeval-v2] questions.jsonl missing at ${dataRoot}; ` +
+    `[longmemeval-v2] ${why}; ` +
       `${AUTO_DOWNLOAD_ENV}=1 — downloading dataset from ` +
       `${LONGMEMEVAL_HF_REPO} (~7.12 GB, may take minutes)…`,
   );

@@ -107,7 +107,7 @@ export async function run(
     join(getBenchmarksDir(), benchmark.id, "data");
   const tier = resolveTier();
 
-  await ensureDatasetAvailable(dataRoot);
+  await ensureDatasetAvailable(dataRoot, tier);
 
   const items = await loadLongMemEvalV2({ dataRoot, tier });
   const filtered =

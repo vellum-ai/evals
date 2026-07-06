@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -35,13 +35,30 @@ async function makeEmptyDataRoot(): Promise<string> {
   return mkdtemp(join(tmpdir(), "lme-v2-ensure-"));
 }
 
+async function writeQuestions(dataRoot: string): Promise<void> {
+  await writeFile(join(dataRoot, "questions.jsonl"), "", "utf8");
+}
+
+async function writeHaystack(dataRoot: string, tier: string): Promise<void> {
+  await mkdir(join(dataRoot, "haystacks"), { recursive: true });
+  await writeFile(
+    join(dataRoot, "haystacks", `lme_v2_${tier}.json`),
+    "{}",
+    "utf8",
+  );
+}
+
+async function writeTrajectories(dataRoot: string): Promise<void> {
+  await writeFile(join(dataRoot, "trajectories.jsonl"), "", "utf8");
+}
+
 describe("ensureDatasetAvailable", () => {
   test("env unset + data missing: no download, loader error preserved", async () => {
     delete process.env[AUTO_DOWNLOAD_ENV];
     const dataRoot = await makeEmptyDataRoot();
     const { calls, deps } = makeSpies();
 
-    await ensureDatasetAvailable(dataRoot, deps);
+    await ensureDatasetAvailable(dataRoot, "small", deps);
     expect(calls).toEqual([]);
 
     // The loader's helpful local-dev error stays byte-identical to today.
@@ -57,19 +74,61 @@ describe("ensureDatasetAvailable", () => {
     for (const value of ["0", "true"]) {
       process.env[AUTO_DOWNLOAD_ENV] = value;
       const { calls, deps } = makeSpies();
-      await ensureDatasetAvailable(dataRoot, deps);
+      await ensureDatasetAvailable(dataRoot, "small", deps);
       expect(calls).toEqual([]);
     }
   });
 
-  test("env=1 + data present: no download attempt", async () => {
-    process.env[AUTO_DOWNLOAD_ENV] = "1";
+  test("env unset + questions.jsonl present but others missing: no download (strict gate)", async () => {
+    delete process.env[AUTO_DOWNLOAD_ENV];
     const dataRoot = await makeEmptyDataRoot();
-    await writeFile(join(dataRoot, "questions.jsonl"), "", "utf8");
+    await writeQuestions(dataRoot);
     const { calls, deps } = makeSpies();
 
-    await ensureDatasetAvailable(dataRoot, deps);
+    await ensureDatasetAvailable(dataRoot, "small", deps);
     expect(calls).toEqual([]);
+  });
+
+  test("env=1 + all required files present: no download attempt", async () => {
+    process.env[AUTO_DOWNLOAD_ENV] = "1";
+    const dataRoot = await makeEmptyDataRoot();
+    await writeQuestions(dataRoot);
+    await writeHaystack(dataRoot, "small");
+    await writeTrajectories(dataRoot);
+    const { calls, deps } = makeSpies();
+
+    await ensureDatasetAvailable(dataRoot, "small", deps);
+    expect(calls).toEqual([]);
+  });
+
+  test("env=1 + questions.jsonl present but trajectories.jsonl missing: download resumes (regression)", async () => {
+    process.env[AUTO_DOWNLOAD_ENV] = "1";
+    const dataRoot = await makeEmptyDataRoot();
+    await writeQuestions(dataRoot);
+    await writeHaystack(dataRoot, "small");
+    const { calls, deps } = makeSpies();
+
+    await ensureDatasetAvailable(dataRoot, "small", deps);
+    expect(calls).toEqual([
+      { fn: "download", arg: { dataRoot } },
+      { fn: "relabel", arg: dataRoot },
+    ]);
+  });
+
+  test("env=1 + selected tier haystack missing: download resumes", async () => {
+    process.env[AUTO_DOWNLOAD_ENV] = "1";
+    const dataRoot = await makeEmptyDataRoot();
+    await writeQuestions(dataRoot);
+    // Only the other tier's haystack is present.
+    await writeHaystack(dataRoot, "small");
+    await writeTrajectories(dataRoot);
+    const { calls, deps } = makeSpies();
+
+    await ensureDatasetAvailable(dataRoot, "medium", deps);
+    expect(calls).toEqual([
+      { fn: "download", arg: { dataRoot } },
+      { fn: "relabel", arg: dataRoot },
+    ]);
   });
 
   test("env=1 + data missing: download then relabel, in order, with the dataRoot", async () => {
@@ -77,7 +136,7 @@ describe("ensureDatasetAvailable", () => {
     const dataRoot = await makeEmptyDataRoot();
     const { calls, deps } = makeSpies();
 
-    await ensureDatasetAvailable(dataRoot, deps);
+    await ensureDatasetAvailable(dataRoot, "small", deps);
     expect(calls).toEqual([
       { fn: "download", arg: { dataRoot } },
       { fn: "relabel", arg: dataRoot },
@@ -91,7 +150,9 @@ describe("ensureDatasetAvailable", () => {
       downloadError: new Error("network unreachable"),
     });
 
-    const rejection = expect(ensureDatasetAvailable(dataRoot, deps)).rejects;
+    const rejection = expect(
+      ensureDatasetAvailable(dataRoot, "small", deps),
+    ).rejects;
     await rejection.toThrow(/auto-download failed/);
     await rejection.toThrow(/xiaowu0162\/longmemeval-v2/);
     await rejection.toThrow(dataRoot);

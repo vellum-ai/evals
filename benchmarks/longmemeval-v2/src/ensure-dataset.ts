@@ -24,7 +24,7 @@ interface EnsureDeps {
  * no-op so local dev keeps the loader's explicit "run data/download.ts"
  * error.
  *
- * Two complementary self-heals make pod retries safe:
+ * Three complementary self-heals make pod retries safe:
  *
  * - The file-completeness check heals a kill *during download*: a partial
  *   download can leave questions.jsonl on disk while the haystack and/or
@@ -39,6 +39,15 @@ interface EnsureDeps {
  *   JSONs (it never touches the ~7 GB trajectories.jsonl):
  *   already-relabeled ids miss the label map and pass through, raw ids
  *   get relabeled.
+ * - When that fast-path relabel *throws* (torn/corrupt files — e.g. a
+ *   half-written questions.jsonl or a haystack tier the selected run does
+ *   not even use), fall back to the full download + relabel:
+ *   huggingface-cli re-fetches hash-mismatched files, healing the tear.
+ *   If the fallback also fails, the actionable wrapped error propagates —
+ *   which correctly terminates the unhealable case where
+ *   question-labels.json is absent from a custom dataRoot (it is committed
+ *   to this repo, not part of the Hugging Face dataset, so no download can
+ *   create it).
  *
  * Also safe on re-download: huggingface-cli resumes/hash-skips
  * already-downloaded files, and a re-download of hash-mismatched
@@ -74,7 +83,26 @@ export async function ensureDatasetAvailable(
     try {
       await deps.relabel(dataRoot);
     } catch (err) {
-      throw wrapBootstrapError(err, dataRoot);
+      // A failing relabel over present files usually means a torn/corrupt
+      // file (half-written questions.jsonl, or a haystack tier this run
+      // doesn't even use). The download is resumable and re-fetches
+      // hash-mismatched files, so fall back to the full bootstrap instead
+      // of failing here. If the fallback fails too (e.g. the unhealable
+      // missing-question-labels.json case), the wrapped error propagates.
+      const cause = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[longmemeval-v2] fast-path relabel failed (${cause}); ` +
+          "attempting full download + relabel to heal potentially torn files…",
+      );
+      try {
+        await deps.download({ dataRoot });
+        await deps.relabel(dataRoot);
+      } catch (fallbackErr) {
+        throw wrapBootstrapError(fallbackErr, dataRoot);
+      }
+      console.error(
+        "[longmemeval-v2] fallback download + relabel complete — torn files healed.",
+      );
     }
     return;
   }
@@ -101,7 +129,7 @@ export async function ensureDatasetAvailable(
   );
 }
 
-/** Actionable wrapper shared by the download and fast-path relabel failures. */
+/** Actionable wrapper shared by the download and fast-path fallback failures. */
 function wrapBootstrapError(err: unknown, dataRoot: string): Error {
   const cause = err instanceof Error ? err.message : String(err);
   return new Error(

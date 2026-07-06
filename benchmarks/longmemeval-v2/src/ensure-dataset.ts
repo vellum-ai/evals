@@ -1,19 +1,14 @@
 import { join } from "node:path";
 
+import { pathExists } from "../../../src/lib/fs";
 import {
   downloadDataset,
-  existsFile,
   relabelQuestions,
   LONGMEMEVAL_HF_REPO,
 } from "./dataset-download";
 import type { Tier } from "./loader";
 
 export const AUTO_DOWNLOAD_ENV = "EVALS_DATA_AUTO_DOWNLOAD";
-
-interface EnsureDeps {
-  download: typeof downloadDataset;
-  relabel: typeof relabelQuestions;
-}
 
 /**
  * Pod-only dataset bootstrap. The dataset counts as present only when
@@ -47,7 +42,11 @@ interface EnsureDeps {
  *   which correctly terminates the unhealable case where
  *   question-labels.json is absent from a custom dataRoot (it is committed
  *   to this repo, not part of the Hugging Face dataset, so no download can
- *   create it).
+ *   create it). Exception: when the fast-path relabel fails with
+ *   EROFS/EACCES the dataRoot is read-only (an operator pre-staged it via
+ *   EVALS_LONGMEMEVAL_DATA_ROOT) — a download into it is doomed, so skip
+ *   the self-heal with a warning and let the loader's strict validation
+ *   judge the pre-staged data as-is.
  *
  * Also safe on re-download: huggingface-cli resumes/hash-skips
  * already-downloaded files, and a re-download of hash-mismatched
@@ -56,8 +55,9 @@ interface EnsureDeps {
 export async function ensureDatasetAvailable(
   dataRoot: string,
   tier: Tier,
-  deps: EnsureDeps = { download: downloadDataset, relabel: relabelQuestions },
 ): Promise<void> {
+  if (process.env[AUTO_DOWNLOAD_ENV] !== "1") return;
+
   const requiredFiles = [
     "questions.jsonl",
     join("haystacks", `lme_v2_${tier}.json`),
@@ -66,10 +66,9 @@ export async function ensureDatasetAvailable(
   const present: string[] = [];
   const missing: string[] = [];
   for (const file of requiredFiles) {
-    if (await existsFile(join(dataRoot, file))) present.push(file);
+    if (await pathExists(join(dataRoot, file))) present.push(file);
     else missing.push(file);
   }
-  if (process.env[AUTO_DOWNLOAD_ENV] !== "1") return;
 
   if (missing.length === 0) {
     // Everything is on disk, so skip the download — but a previous pod
@@ -81,11 +80,20 @@ export async function ensureDatasetAvailable(
         "heal any interrupted prior bootstrap.",
     );
     try {
-      await deps.relabel(dataRoot);
+      await relabelQuestions(dataRoot);
     } catch (err) {
-      // A failing relabel over present files usually means a torn/corrupt
-      // file (half-written questions.jsonl, or a haystack tier this run
-      // doesn't even use). The download is resumable and re-fetches
+      // A read-only dataRoot (pre-staged mount) can't be relabeled — and a
+      // download into it would be just as doomed, so don't attempt one.
+      if (isReadOnlyFsError(err)) {
+        console.error(
+          "[longmemeval-v2] dataRoot is not writable; skipping relabel " +
+            "self-heal — loader will validate the pre-staged data as-is.",
+        );
+        return;
+      }
+      // Otherwise a failing relabel over present files usually means a
+      // torn/corrupt file (half-written questions.jsonl, or a haystack tier
+      // this run doesn't even use). The download is resumable and re-fetches
       // hash-mismatched files, so fall back to the full bootstrap instead
       // of failing here. If the fallback fails too (e.g. the unhealable
       // missing-question-labels.json case), the wrapped error propagates.
@@ -95,8 +103,8 @@ export async function ensureDatasetAvailable(
           "attempting full download + relabel to heal potentially torn files…",
       );
       try {
-        await deps.download({ dataRoot });
-        await deps.relabel(dataRoot);
+        await downloadDataset({ dataRoot });
+        await relabelQuestions(dataRoot);
       } catch (fallbackErr) {
         throw wrapBootstrapError(fallbackErr, dataRoot);
       }
@@ -118,8 +126,8 @@ export async function ensureDatasetAvailable(
   );
   const startedAt = Date.now();
   try {
-    await deps.download({ dataRoot });
-    await deps.relabel(dataRoot);
+    await downloadDataset({ dataRoot });
+    await relabelQuestions(dataRoot);
   } catch (err) {
     throw wrapBootstrapError(err, dataRoot);
   }
@@ -127,6 +135,21 @@ export async function ensureDatasetAvailable(
   console.error(
     `[longmemeval-v2] dataset download + relabel complete in ${elapsedSeconds}s.`,
   );
+}
+
+/**
+ * True when the error (or anything in its `cause` chain) is a read-only /
+ * permission filesystem failure — the signature of a pre-staged read-only
+ * dataRoot rather than torn data.
+ */
+function isReadOnlyFsError(err: unknown): boolean {
+  let current: unknown = err;
+  while (current !== null && typeof current === "object") {
+    const code = (current as NodeJS.ErrnoException).code;
+    if (code === "EROFS" || code === "EACCES") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 /** Actionable wrapper shared by the download and fast-path fallback failures. */

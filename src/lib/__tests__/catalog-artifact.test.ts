@@ -1,33 +1,15 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 
 import { buildCatalogArtifact } from "../catalog-artifact";
+import {
+  restoreCatalogEnvAfterEach,
+  setupTempDirs,
+} from "./helpers/catalog-dirs";
 
-const originalProfilesDir = process.env.EVALS_PROFILES_DIR;
-const originalBenchmarksDir = process.env.EVALS_BENCHMARKS_DIR;
-
-afterEach(() => {
-  if (originalProfilesDir === undefined) delete process.env.EVALS_PROFILES_DIR;
-  else process.env.EVALS_PROFILES_DIR = originalProfilesDir;
-  if (originalBenchmarksDir === undefined)
-    delete process.env.EVALS_BENCHMARKS_DIR;
-  else process.env.EVALS_BENCHMARKS_DIR = originalBenchmarksDir;
-});
-
-/** Create empty temp benchmarks/profiles dirs and point the env seams at them. */
-async function setupTempDirs(): Promise<{
-  benchmarksDir: string;
-  profilesDir: string;
-}> {
-  const benchmarksDir = await mkdtemp(join(tmpdir(), "evals-benchmarks-"));
-  const profilesDir = await mkdtemp(join(tmpdir(), "evals-profiles-"));
-  process.env.EVALS_BENCHMARKS_DIR = benchmarksDir;
-  process.env.EVALS_PROFILES_DIR = profilesDir;
-  return { benchmarksDir, profilesDir };
-}
+restoreCatalogEnvAfterEach();
 
 async function makeBenchmark(
   benchmarksDir: string,

@@ -11,8 +11,9 @@
  * back to the personal-intelligence benchmark via `getTestsDir()` so the
  * legacy `evals tests list` surface keeps working.
  */
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { assertSafeId, getTestsDir, resolveUnder } from "./catalog";
+import { pathExists } from "./fs";
 
 import type { TestSetupCommand } from "./setup-command";
 
@@ -45,20 +46,10 @@ function parseSpecStatus(spec: string): string | undefined {
   return status?.[1];
 }
 
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw err;
-  }
-}
-
 async function loadSetupCommands(
   setupPath: string,
 ): Promise<TestSetupCommand[]> {
-  if (!(await exists(setupPath))) return [];
+  if (!(await pathExists(setupPath))) return [];
   const imported = (await import(setupPath)) as {
     default?: TestSetupCommand[];
   };

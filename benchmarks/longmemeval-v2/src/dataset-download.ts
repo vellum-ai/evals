@@ -7,21 +7,14 @@
  * Informational progress lines go to stderr so stdout stays reserved for
  * command output.
  */
-import { readFile, writeFile, stat } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
+import { pathExists } from "../../../src/lib/fs";
 
 export const LONGMEMEVAL_HF_REPO = "xiaowu0162/longmemeval-v2";
 
 const INSTALL_HINT = 'Install it with: pip install -U "huggingface_hub[cli]"';
-
-export async function existsFile(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Fetch the raw dataset from Hugging Face into dataRoot. Idempotent:
@@ -71,7 +64,7 @@ export async function downloadDataset(opts: {
  */
 export async function relabelQuestions(dataRoot: string): Promise<void> {
   const labelsPath = join(dataRoot, "question-labels.json");
-  if (!(await existsFile(labelsPath))) {
+  if (!(await pathExists(labelsPath))) {
     throw new Error(`question-labels.json not found at ${labelsPath}`);
   }
 
@@ -82,7 +75,7 @@ export async function relabelQuestions(dataRoot: string): Promise<void> {
 
   // --- Relabel questions.jsonl ---
   const questionsPath = join(dataRoot, "questions.jsonl");
-  if (!(await existsFile(questionsPath))) {
+  if (!(await pathExists(questionsPath))) {
     throw new Error(`questions.jsonl not found at ${questionsPath}`);
   }
 
@@ -114,7 +107,7 @@ export async function relabelQuestions(dataRoot: string): Promise<void> {
   // --- Re-key haystack files ---
   for (const tier of ["small", "medium"] as const) {
     const haystackPath = join(dataRoot, "haystacks", `lme_v2_${tier}.json`);
-    if (!(await existsFile(haystackPath))) {
+    if (!(await pathExists(haystackPath))) {
       console.error(`Skipping ${tier} haystack (not present)`);
       continue;
     }

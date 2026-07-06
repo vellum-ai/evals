@@ -10,9 +10,7 @@
  * and profile discovery reads the filesystem (honoring the
  * `EVALS_BENCHMARKS_DIR` / `EVALS_PROFILES_DIR` overrides).
  */
-import { readFile, stat } from "node:fs/promises";
-
-import { BenchmarkManifestSchema } from "./benchmark";
+import { readBenchmarkManifest } from "./benchmark";
 import {
   DEFAULT_BENCHMARK_ID,
   getBenchmarksDir,
@@ -21,6 +19,7 @@ import {
   listProfileIds,
   resolveUnder,
 } from "./catalog";
+import { pathExists } from "./fs";
 import { loadProfile } from "./profile";
 
 export interface CatalogBenchmark {
@@ -51,61 +50,10 @@ export interface BuildCatalogArtifactInput {
   generatedAt: string;
 }
 
-/**
- * Read + validate a benchmark's manifest without `loadBenchmark`, which
- * dynamically imports `benchmarks/<id>/src/run.ts` relative to `src/lib/`
- * — that breaks under the `EVALS_BENCHMARKS_DIR` test seam and needlessly
- * loads run modules. Error messages mirror `loadBenchmark`'s so a broken
- * manifest fails the catalog build loudly with familiar diagnostics.
- */
-async function readBenchmarkManifest(id: string, manifestPath: string) {
-  let raw: string;
-  try {
-    raw = await readFile(manifestPath, "utf8");
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      throw new Error(`Benchmark "${id}" not found — expected ${manifestPath}`);
-    }
-    throw new Error(
-      `Failed to read benchmark "${id}" manifest at ${manifestPath}: ${(err as Error).message}`,
-    );
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(
-      `Benchmark "${id}" manifest at ${manifestPath} is not valid JSON: ${(err as Error).message}`,
-    );
-  }
-
-  const result = BenchmarkManifestSchema.safeParse(parsed);
-  if (!result.success) {
-    const issues = result.error.issues
-      .map((i) => `  - ${i.path.join(".") || "<root>"}: ${i.message}`)
-      .join("\n");
-    throw new Error(
-      `Benchmark "${id}" manifest at ${manifestPath} failed schema validation:\n${issues}`,
-    );
-  }
-
-  return result.data;
-}
-
 /** Unit ids for a benchmark, or null when its units dir is absent on disk
  *  (e.g. longmemeval-v2, whose unit ids come from the gitignored dataset). */
 async function listUnitsOrNull(unitsDir: string): Promise<string[] | null> {
-  try {
-    await stat(unitsDir);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return null;
-    throw new Error(
-      `Failed to stat benchmark units directory at ${unitsDir}: ${(err as Error).message}`,
-    );
-  }
+  if (!(await pathExists(unitsDir))) return null;
   return listBenchmarkUnitIds(unitsDir);
 }
 

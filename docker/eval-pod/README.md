@@ -73,6 +73,24 @@ egress jail (passthrough — not TLS-intercepted or recorded, since these are bu
 content fetches, not model traffic), so the pod also needs `api.github.com` and
 `raw.githubusercontent.com` reachable at run time.
 
+**LongMemEval-V2 dataset.** The image sets `EVALS_DATA_AUTO_DOWNLOAD=1` and
+bundles `huggingface-cli`: when a run requests `--benchmark longmemeval-v2` and
+the gitignored dataset is absent, the harness downloads the
+`xiaowu0162/longmemeval-v2` dataset from Hugging Face at benchmark-load time,
+before the run proper (runs of other benchmarks are unaffected and perform no
+download). Operators must budget for this: the pod needs **~7.12 GB of
+ephemeral disk headroom** for the dataset (on top of normal image/run
+overhead), and **egress to `huggingface.co` and its CDN hosts**
+(`cdn-lfs*.huggingface.co` / `*.hf.co`) — the fetch happens in the harness's
+own network context, outside the recording jail that wraps species traffic.
+Retries are safe: `huggingface-cli` hash-skips files already downloaded and
+the relabel step is idempotent. The dataset is public, so no Hugging Face
+token or new secret is required. When pre-staging the dataset via
+`EVALS_LONGMEMEVAL_DATA_ROOT`, the mount SHOULD be writable: even with the
+data fully present, the harness runs an idempotent relabel self-heal at run
+start that writes into the dataRoot. On a read-only mount the self-heal
+relabel is skipped with a warning and the loader validates the data as-is.
+
 ## Smoke test without a full run
 
 To exercise the bundled CLI without bringing up `dockerd` or running a

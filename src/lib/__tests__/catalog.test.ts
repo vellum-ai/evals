@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 
 import {
   listBenchmarkIds,
@@ -12,25 +12,19 @@ import {
 } from "../catalog";
 import { loadProfile } from "../profile";
 import { loadTestDef } from "../test-def";
+import {
+  makeTempCatalogDir,
+  restoreCatalogEnvAfterEach,
+} from "./helpers/catalog-dirs";
 
-const originalProfilesDir = process.env.EVALS_PROFILES_DIR;
-const originalTestsDir = process.env.EVALS_TESTS_DIR;
-const originalBenchmarksDir = process.env.EVALS_BENCHMARKS_DIR;
-
-afterEach(() => {
-  if (originalProfilesDir === undefined) delete process.env.EVALS_PROFILES_DIR;
-  else process.env.EVALS_PROFILES_DIR = originalProfilesDir;
-  if (originalTestsDir === undefined) delete process.env.EVALS_TESTS_DIR;
-  else process.env.EVALS_TESTS_DIR = originalTestsDir;
-  if (originalBenchmarksDir === undefined)
-    delete process.env.EVALS_BENCHMARKS_DIR;
-  else process.env.EVALS_BENCHMARKS_DIR = originalBenchmarksDir;
-});
+restoreCatalogEnvAfterEach();
 
 describe("eval catalog discovery", () => {
   test("lists profile directories alphabetically and validates manifests", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "evals-profiles-"));
-    process.env.EVALS_PROFILES_DIR = dir;
+    const dir = await makeTempCatalogDir(
+      "EVALS_PROFILES_DIR",
+      "evals-profiles-",
+    );
 
     await mkdir(join(dir, "zeta"), { recursive: true });
     await mkdir(join(dir, "alpha"), { recursive: true });
@@ -54,8 +48,10 @@ describe("eval catalog discovery", () => {
   });
 
   test("accepts branding on a profile manifest and rejects bad colors", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "evals-profiles-"));
-    process.env.EVALS_PROFILES_DIR = dir;
+    const dir = await makeTempCatalogDir(
+      "EVALS_PROFILES_DIR",
+      "evals-profiles-",
+    );
 
     await mkdir(join(dir, "branded"), { recursive: true });
     await writeFile(
@@ -82,16 +78,17 @@ describe("eval catalog discovery", () => {
   });
 
   test("rejects unsafe catalog ids discovered on disk", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "evals-profiles-"));
-    process.env.EVALS_PROFILES_DIR = dir;
+    const dir = await makeTempCatalogDir(
+      "EVALS_PROFILES_DIR",
+      "evals-profiles-",
+    );
     await mkdir(join(dir, "bad_id"), { recursive: true });
 
     await expect(listProfileIds()).rejects.toThrow("Invalid profile id");
   });
 
   test("lists tests and loads setup plus metric files", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "evals-tests-"));
-    process.env.EVALS_TESTS_DIR = dir;
+    const dir = await makeTempCatalogDir("EVALS_TESTS_DIR", "evals-tests-");
     await mkdir(join(dir, "timeline-recall", "metrics"), { recursive: true });
     await writeFile(join(dir, "timeline-recall", "SPEC.md"), "# spec", "utf8");
     await writeFile(
@@ -114,8 +111,10 @@ describe("eval catalog discovery", () => {
   });
 
   test("lists benchmark directories alphabetically", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "evals-benchmarks-"));
-    process.env.EVALS_BENCHMARKS_DIR = dir;
+    const dir = await makeTempCatalogDir(
+      "EVALS_BENCHMARKS_DIR",
+      "evals-benchmarks-",
+    );
 
     await mkdir(join(dir, "personal-intelligence"), { recursive: true });
     await mkdir(join(dir, "longmemeval-v2"), { recursive: true });

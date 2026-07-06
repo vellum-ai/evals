@@ -4,7 +4,9 @@
  * The dataset itself is never downloaded from source code — operators
  * run the benchmark's own `data/download.ts` first, and the loader +
  * trajectories module throw helpful "missing file" errors pointing at
- * that script if the data isn't on disk yet.
+ * that script if the data isn't on disk yet. Pod exception:
+ * `EVALS_DATA_AUTO_DOWNLOAD=1` (set in the eval-pod image) triggers an
+ * in-harness download when the dataset is absent (see `ensure-dataset.ts`).
  *
  * Operator surface (env vars):
  *
@@ -12,6 +14,8 @@
  *     `benchmarks/longmemeval-v2/data` under the evals package, which
  *     is where `data/download.ts` writes by convention.
  *   EVALS_LONGMEMEVAL_TIER      — "small" (default) or "medium".
+ *   EVALS_DATA_AUTO_DOWNLOAD    — "1" enables auto-download of a missing
+ *     dataset at run start (pod-only; unset for local dev).
  *
  * Composed pieces:
  *   - `loadLongMemEvalV2`      — `BenchmarkItem`s with `eval_function`
@@ -37,6 +41,7 @@ import type { EvalProgressReporter } from "../../../src/lib/runner/progress";
 import { wasErrorReportedToProgress } from "../../../src/lib/runner/run-once";
 import { runWithConcurrency } from "../../../src/lib/runner/concurrency";
 
+import { ensureDatasetAvailable } from "./ensure-dataset";
 import { loadLongMemEvalV2, type Tier, TIERS } from "./loader";
 import { runLongMemEvalV2Unit } from "./runner";
 import { openTrajectories } from "./trajectory-reader";
@@ -101,6 +106,8 @@ export async function run(
     process.env["EVALS_LONGMEMEVAL_DATA_ROOT"] ??
     join(getBenchmarksDir(), benchmark.id, "data");
   const tier = resolveTier();
+
+  await ensureDatasetAvailable(dataRoot, tier);
 
   const items = await loadLongMemEvalV2({ dataRoot, tier });
   const filtered =

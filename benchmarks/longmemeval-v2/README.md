@@ -44,6 +44,8 @@ bun run data/download.ts
 
 `download.ts` is idempotent. The dataset is 7.12 GB; the `data/` directory stays gitignored.
 
+Pod exception: inside the eval-pod image, `EVALS_DATA_AUTO_DOWNLOAD=1` makes the harness run this download automatically at run start when the dataset files are missing — operators only run `download.ts` by hand for local dev.
+
 ## Loader
 
 `src/loader.ts` exports `loadLongMemEvalV2({ dataRoot, tier })`, returning an array of `BenchmarkItem`s:
@@ -224,10 +226,11 @@ and closes the reader in a `finally`.
 
 Operator surface (env vars):
 
-| Variable                      | Default                          | Meaning                                                          |
-| ----------------------------- | -------------------------------- | ---------------------------------------------------------------- |
-| `EVALS_LONGMEMEVAL_DATA_ROOT` | `benchmarks/longmemeval-v2/data` | Where `download.ts` wrote `questions.jsonl` etc.                 |
-| `EVALS_LONGMEMEVAL_TIER`      | `small`                          | `small` (~115k tokens/haystack) or `medium` (~115M, memory-only) |
+| Variable                      | Default                          | Meaning                                                                                                                                                                         |
+| ----------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EVALS_LONGMEMEVAL_DATA_ROOT` | `benchmarks/longmemeval-v2/data` | Where `download.ts` wrote `questions.jsonl` etc.                                                                                                                                |
+| `EVALS_LONGMEMEVAL_TIER`      | `small`                          | `small` (~115k tokens/haystack) or `medium` (~115M, memory-only)                                                                                                                |
+| `EVALS_DATA_AUTO_DOWNLOAD`    | unset                            | Strict `=1` gate (set in the eval-pod image): when dataset files are missing, downloads + relabels at run start. Local dev without it is unchanged — missing data still throws. |
 
 `--filter <ids>` selects a subset by V2 `question_id`. Omit to run every
 question in the tier.

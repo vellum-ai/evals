@@ -237,11 +237,17 @@ async function loadBenchmarkRunFn(id: string): Promise<BenchmarkRunFn> {
   return mod.run as BenchmarkRunFn;
 }
 
-export async function loadBenchmark(id: string): Promise<Benchmark> {
-  assertSafeId("benchmark", id);
-  const base = getBenchmarksDir();
-  const manifestPath = resolveUnder(base, id, "manifest.json");
-
+/**
+ * Read + validate `benchmarks/<id>/manifest.json`. Shared by
+ * `loadBenchmark` and callers that need the manifest without loading the
+ * benchmark's run module (e.g. the catalog-artifact builder, where the
+ * dynamic import of `benchmarks/<id>/src/run.ts` would break under the
+ * `EVALS_BENCHMARKS_DIR` test seam and needlessly load run modules).
+ */
+export async function readBenchmarkManifest(
+  id: string,
+  manifestPath: string,
+): Promise<BenchmarkManifest> {
   let raw: string;
   try {
     raw = await readFile(manifestPath, "utf8");
@@ -274,12 +280,21 @@ export async function loadBenchmark(id: string): Promise<Benchmark> {
     );
   }
 
-  const unitsDir = resolveUnder(base, id, result.data.unitDirName);
+  return result.data;
+}
+
+export async function loadBenchmark(id: string): Promise<Benchmark> {
+  assertSafeId("benchmark", id);
+  const base = getBenchmarksDir();
+  const manifestPath = resolveUnder(base, id, "manifest.json");
+
+  const manifest = await readBenchmarkManifest(id, manifestPath);
+  const unitsDir = resolveUnder(base, id, manifest.unitDirName);
 
   const runFn = await loadBenchmarkRunFn(id);
   const benchmark: Benchmark = {
     id,
-    manifest: result.data,
+    manifest,
     unitsDir,
     // Bind `runFn` to *this* benchmark instance so callers can write
     // `await benchmark.run({...})` without having to thread the

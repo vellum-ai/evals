@@ -120,6 +120,22 @@ RUN mkdir -p /etc/eval-pod
 # run time for plugin-installing profiles. See src/lib/adapters/vellum.ts.
 ENV EVALS_PLUGIN_INSTALL_LIVE=1
 
+# LongMemEval-V2's ~7.12 GB dataset is gitignored — the image ships
+# benchmarks/longmemeval-v2/data/ with only download.ts + question-labels.json.
+# EVALS_DATA_AUTO_DOWNLOAD=1 opts the harness into fetching the dataset at
+# benchmark-load time (only for runs that request that benchmark; see
+# benchmarks/longmemeval-v2/src/ensure-dataset.ts). huggingface-cli is the
+# fetcher the download module shells out to; alpine's Python is externally
+# managed (PEP 668), so it lives in its own venv with a PATH shim. Pin
+# huggingface_hub <1.0: the 1.x line replaces `huggingface-cli` with `hf` and
+# ships only a deprecation stub under the old name (exits nonzero), while the
+# download module invokes `huggingface-cli download …`.
+RUN apk add --no-cache python3 py3-pip \
+    && python3 -m venv /opt/hf \
+    && /opt/hf/bin/pip install --no-cache-dir "huggingface_hub[cli]<1.0" \
+    && ln -s /opt/hf/bin/huggingface-cli /usr/local/bin/huggingface-cli
+ENV EVALS_DATA_AUTO_DOWNLOAD=1
+
 ENTRYPOINT ["/usr/local/bin/start.sh"]
 # A bare `docker run` prints CLI usage; the launcher supplies `run --profiles …`.
 CMD ["--help"]

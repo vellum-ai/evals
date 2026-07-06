@@ -1,26 +1,29 @@
 import { describe, expect, test } from "bun:test";
 
-import {
-  SESSION_ID_PATTERN,
-  assertValidSessionId,
-  generateSessionId,
-  resolveSessionId,
-  sessionTimestampSuffix,
-} from "../session-id";
+import { resolveSessionId } from "../session-id";
 
-describe("session id generation", () => {
-  test("generated id without a label matches session-<ts>-<rand>", () => {
-    const id = generateSessionId(undefined, sessionTimestampSuffix());
-    expect(id).toMatch(/^session-\d{17}-[0-9a-f]{4}$/);
+/** Shape of a generated id: `session-<17-digit ms timestamp>-<4 hex>`. */
+const GENERATED_ID = /^session-\d{17}-[0-9a-f]{4}$/;
+
+describe("generated session ids", () => {
+  test("no explicit, no env, no label matches session-<ts>-<rand>", () => {
+    expect(resolveSessionId({ env: {} })).toMatch(GENERATED_ID);
   });
 
-  test("generated id with a label appends the slug", () => {
-    const id = generateSessionId("My Fancy Label!", sessionTimestampSuffix());
+  test("a label appends its slug", () => {
+    const id = resolveSessionId({ env: {}, label: "My Fancy Label!" });
     expect(id).toMatch(/^session-\d{17}-[0-9a-f]{4}-my-fancy-label$/);
+  });
+
+  test("generated ids satisfy the externally-supplied-id contract", () => {
+    // Round-trip: a generated id must be accepted verbatim when fed back
+    // as an explicit --session-id (the launcher does exactly this).
+    const generated = resolveSessionId({ env: {}, label: "Some Label" });
+    expect(resolveSessionId({ explicit: generated, env: {} })).toBe(generated);
   });
 });
 
-describe("resolveSessionId", () => {
+describe("resolveSessionId precedence", () => {
   test("explicit id wins over env and label, returned verbatim", () => {
     const id = resolveSessionId({
       explicit: "my-launcher-run-42",
@@ -40,18 +43,12 @@ describe("resolveSessionId", () => {
 
   test("whitespace-only env value is treated as unset", () => {
     const id = resolveSessionId({ env: { EVAL_RESULTS_SESSION_ID: "   " } });
-    expect(id).toMatch(/^session-\d{17}-[0-9a-f]{4}$/);
+    expect(id).toMatch(GENERATED_ID);
   });
 
   test("no explicit, no env falls back to the generated shape", () => {
     const id = resolveSessionId({ env: {}, label: "foo" });
     expect(id).toMatch(/^session-\d{17}-[0-9a-f]{4}-foo$/);
-  });
-
-  test("invalid explicit id names the flag", () => {
-    expect(() => resolveSessionId({ explicit: "../escape", env: {} })).toThrow(
-      /--session-id/,
-    );
   });
 
   test("empty explicit id throws instead of falling back", () => {
@@ -71,54 +68,33 @@ describe("resolveSessionId", () => {
       }),
     ).toThrow(/--session-id/);
   });
-
-  test("invalid env id names the env var", () => {
-    expect(() =>
-      resolveSessionId({ env: { EVAL_RESULTS_SESSION_ID: "a/b" } }),
-    ).toThrow(/EVAL_RESULTS_SESSION_ID/);
-  });
 });
 
-describe("SESSION_ID_PATTERN", () => {
-  test("generated ids always satisfy the externally-supplied-id contract", () => {
-    expect(
-      SESSION_ID_PATTERN.test(
-        generateSessionId(undefined, sessionTimestampSuffix()),
-      ),
-    ).toBe(true);
-    expect(
-      SESSION_ID_PATTERN.test(
-        generateSessionId("Some Label", sessionTimestampSuffix()),
-      ),
-    ).toBe(true);
-  });
-});
-
-describe("assertValidSessionId", () => {
-  const invalid = ["../escape", "a/b", "has space", "", "-leading-hyphen"];
+describe("supplied-id validation", () => {
+  const invalid = ["../escape", "a/b", "has space", "-leading-hyphen"];
   for (const id of invalid) {
-    test(`rejects ${JSON.stringify(id)} with a clear message`, () => {
-      expect(() => assertValidSessionId(id, "--session-id")).toThrow(
+    test(`rejects explicit ${JSON.stringify(id)} with a clear message`, () => {
+      expect(() => resolveSessionId({ explicit: id, env: {} })).toThrow(
         /letters, digits, hyphen, underscore; must start alphanumeric; max 128 chars/,
       );
     });
   }
 
   test("rejects a 129-char id and accepts a 128-char id", () => {
-    expect(() => assertValidSessionId("a".repeat(129), "--session-id")).toThrow(
-      /max 128 chars/,
-    );
     expect(() =>
-      assertValidSessionId("a".repeat(128), "--session-id"),
-    ).not.toThrow();
+      resolveSessionId({ explicit: "a".repeat(129), env: {} }),
+    ).toThrow(/max 128 chars/);
+    expect(resolveSessionId({ explicit: "a".repeat(128), env: {} })).toBe(
+      "a".repeat(128),
+    );
   });
 
   test("error message names the source and the offending value", () => {
-    expect(() => assertValidSessionId("a/b", "--session-id")).toThrow(
+    expect(() => resolveSessionId({ explicit: "a/b", env: {} })).toThrow(
       /--session-id.*"a\/b"/,
     );
     expect(() =>
-      assertValidSessionId("a/b", "EVAL_RESULTS_SESSION_ID"),
+      resolveSessionId({ env: { EVAL_RESULTS_SESSION_ID: "a/b" } }),
     ).toThrow(/EVAL_RESULTS_SESSION_ID.*"a\/b"/);
   });
 });

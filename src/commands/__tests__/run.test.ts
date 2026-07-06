@@ -47,9 +47,9 @@ describe("flushRunFinishedOnSignal", () => {
 
     expect(finishedWith).toEqual(["failed"]);
     expect(bridgeSettles).toBe(1);
-    // Settled once alongside the bridge, then a second drain for any
-    // events the bridge enqueued while settling.
-    expect(emitterSettles).toBe(2);
+    // One drain, after the bridge settled — by then every pending
+    // execution_completed build has already enqueued onto the chain.
+    expect(emitterSettles).toBe(1);
   });
 
   test("skipRunFinished: drains without enqueueing a second run_finished", async () => {
@@ -81,7 +81,7 @@ describe("flushRunFinishedOnSignal", () => {
 
     expect(finishedWith).toEqual([]);
     expect(bridgeSettles).toBe(1);
-    expect(emitterSettles).toBe(2);
+    expect(emitterSettles).toBe(1);
   });
 
   test("works without a bridge", async () => {

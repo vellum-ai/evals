@@ -295,9 +295,9 @@ export interface CollectAndPersistEventsResult {
  * is the cumulative-across-turns array (every turn pushes into it),
  * so `summarizeAssistantUsage(input.assistantEvents)` is the complete
  * event-sourced usage state for the run. Merging it with the on-disk
- * value would double-count every prior turn's records (Codex bot +
- * Devin bot caught this on PR #31348; the recording-sidecar usage
- * lands separately via `mergeRecordedUsage` once at end-of-run).
+ * value would double-count every prior turn's records (the
+ * recording-sidecar usage lands separately via `mergeRecordedUsage`
+ * once at end-of-run).
  *
  * Exported for unit-tests; only `runEvalOnce` calls it in production.
  */
@@ -655,7 +655,7 @@ export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
       // alone: tool-use-only responses (assistant emits a tool_use_*
       // event sequence with no `assistant_text_delta`) are legitimate
       // and produce zero transcript turns while still being a real
-      // response. Devin caught this regression on PR #31348.
+      // response.
       if (eventCount === 0) {
         throw new Error(
           `assistant response collection produced no events for turn ${simulatorTurns + 1}`,
@@ -799,13 +799,10 @@ export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
     lifecycle.dispose();
     // The cleanup steps below can themselves reject (`agent.shutdown()`
     // tearing down containers, the metadata reconcile hitting a disk
-    // error). A rejection here must still propagate to the caller
-    // exactly as before — but it must NOT be allowed to skip the
-    // progress flush, so the cleanup is wrapped in a nested try whose
-    // finally owns the flush. Codex caught the pre-nesting shape on
-    // PR #32: a rejecting shutdown left the finally before `flush()`,
-    // and `commands/run.ts` could auto-publish the bundle while queued
-    // `progress.ndjson` appends from the failed run were still pending.
+    // error). A rejection must still propagate to the caller — but the
+    // cleanup is wrapped in a nested try whose finally owns the flush,
+    // so the progress flush is guaranteed even when shutdown/reconcile
+    // rejects.
     try {
       // Skip the shutdown lifecycle when construction threw before agent
       // assignment — there's nothing to retire and emitting fake shutdown
@@ -842,14 +839,9 @@ export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
         }
       }
     } finally {
-      // Always last, even when shutdown/reconcile rejected above: wait
-      // for every queued `progress.ndjson` append to land on disk.
-      // `commands/run.ts` snapshots + uploads the results bundle as
-      // soon as `benchmark.run` resolves, so a still-pending append
-      // here would be missing from the published dashboard logs even
-      // though the local file finishes moments later. `flush()` never
-      // rejects (the chain swallows append failures), so this can't
-      // mask a re-thrown run error or an in-flight cleanup rejection.
+      // Always last, even when shutdown/reconcile rejected above — see
+      // `flush()`'s doc comment in progress-lifecycle.ts for why it must
+      // complete before the runner's promise resolves and never rejects.
       await lifecycle.flush();
     }
   }

@@ -33,7 +33,7 @@ function recordingPush(opts?: { rejectWith?: Error }): {
 
 const consoleSpies: Array<ReturnType<typeof spyOn>> = [];
 
-function spyConsole(method: "warn" | "error") {
+function spyConsole(method: "log" | "warn" | "error") {
   const spy = spyOn(console, method).mockImplementation(() => {});
   consoleSpies.push(spy);
   return spy;
@@ -127,6 +127,7 @@ describe("autoPublishSession", () => {
 
   test("URL and token set → pushes (sessionId, trimmedUrl, { authToken }) → 'published'", async () => {
     // GIVEN a fully configured env (with whitespace to trim)
+    const log = spyConsole("log");
     const error = spyConsole("error");
     const { push, calls } = recordingPush();
 
@@ -148,6 +149,10 @@ describe("autoPublishSession", () => {
       outUrl: "https://qa.example.com/",
       opts: { authToken: "tok-123" },
     });
+    // AND the success line points at the pushed run's view URL
+    expect(log).toHaveBeenCalledWith(
+      "[evals] published session sess-4 → https://qa.example.com/evals/runs/srv-1",
+    );
     expect(error).not.toHaveBeenCalled();
   });
 

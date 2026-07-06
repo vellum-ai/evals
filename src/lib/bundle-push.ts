@@ -4,6 +4,7 @@
  * Shared by `evals export --out https://...` and the post-run auto-publish
  * path, so it lives in the lib layer with no CLI imports.
  */
+import { readDashboardEnv, stripTrailingSlashes } from "./dashboard-env";
 import { buildBundleBuffer, buildRunBundle } from "./report-bundle";
 
 /**
@@ -23,7 +24,9 @@ export async function pushBundleToUrl(
   outUrl: string,
   opts?: { authToken?: string; fetchImpl?: typeof fetch; timeoutMs?: number },
 ): Promise<{ runId: string; viewUrl: string }> {
-  const authToken = opts?.authToken ?? process.env.QA_AUTH_TOKEN;
+  // Policy: an explicit token wins; the env token is a fallback for
+  // direct `evals export --out <url>` use, and its absence throws.
+  const authToken = opts?.authToken ?? readDashboardEnv().authToken;
   if (!authToken) {
     throw new Error(
       "QA_AUTH_TOKEN is not set — export to a file instead, or set the " +
@@ -32,7 +35,7 @@ export async function pushBundleToUrl(
   }
   const fetchImpl = opts?.fetchImpl ?? globalThis.fetch;
 
-  const base = outUrl.replace(/\/+$/, "");
+  const base = stripTrailingSlashes(outUrl);
   const uploadUrl = `${base}/api/evals/upload`;
 
   console.log(`Bundling session ${sessionId}…`);

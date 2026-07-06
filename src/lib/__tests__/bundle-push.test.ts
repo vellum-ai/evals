@@ -130,6 +130,48 @@ describe("pushBundleToUrl", () => {
     ).rejects.toThrow("Upload failed (503 Service Unavailable): try later");
   });
 
+  test("aborts a hung upload once timeoutMs elapses", async () => {
+    // GIVEN a fetch that accepts the request but never responds, honoring
+    // its abort signal
+    const sessionId = await seedSession();
+    const timeoutMs = 5;
+    const seenSignals: Array<AbortSignal | null | undefined> = [];
+    const hangingFetch = ((
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ) =>
+      new Promise<Response>((_resolve, reject) => {
+        seenSignals.push(init?.signal);
+        // The timer behind AbortSignal.timeout() is unref'd, so if this
+        // pending promise were the only work, Bun could exit the event loop
+        // without ever firing it. A real (ref'd) setTimeout keeps the loop
+        // alive long enough for the abort to fire, and doubles as a fallback
+        // rejection so the test can never hang.
+        const fallback = setTimeout(() => {
+          reject(new Error("fake fetch: abort never fired"));
+        }, timeoutMs + 200);
+        init?.signal?.addEventListener("abort", () => {
+          clearTimeout(fallback);
+          reject(init.signal?.reason ?? new Error("aborted"));
+        });
+      })) as typeof fetch;
+
+    // WHEN/THEN the push is aborted by its timeout instead of hanging
+    const rejection = await pushBundleToUrl(sessionId, "https://qa.vellum.ai", {
+      authToken: "tok-123",
+      fetchImpl: hangingFetch,
+      timeoutMs,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(rejection).toBeInstanceOf(Error);
+    expect((rejection as Error).name).toBe("TimeoutError");
+    // AND the fetch was handed an already-armed timeout signal
+    expect(seenSignals).toHaveLength(1);
+    expect(seenSignals[0]?.aborted).toBe(true);
+  });
+
   test("propagates a fetch rejection", async () => {
     // GIVEN a fetch that fails outright
     const sessionId = await seedSession();

@@ -14,11 +14,14 @@ import { buildBundleBuffer, buildRunBundle } from "./report-bundle";
  *
  * Returns the server-assigned run id and the URL where the pushed run is
  * viewable.
+ *
+ * The upload is bounded by `opts.timeoutMs` (default 2 minutes — bundles can
+ * be large) so a hung endpoint fails the push instead of stalling forever.
  */
 export async function pushBundleToUrl(
   sessionId: string,
   outUrl: string,
-  opts?: { authToken?: string; fetchImpl?: typeof fetch },
+  opts?: { authToken?: string; fetchImpl?: typeof fetch; timeoutMs?: number },
 ): Promise<{ runId: string; viewUrl: string }> {
   const authToken = opts?.authToken ?? process.env.QA_AUTH_TOKEN;
   if (!authToken) {
@@ -48,6 +51,7 @@ export async function pushBundleToUrl(
     method: "POST",
     headers: { Authorization: `Bearer ${authToken}` },
     body: formData,
+    signal: AbortSignal.timeout(opts?.timeoutMs ?? 120_000),
   });
 
   if (!response.ok) {

@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 /** Spy deps that record invocation order + args. */
-function makeSpies(opts: { downloadError?: Error } = {}) {
+function makeSpies(opts: { downloadError?: Error; relabelError?: Error } = {}) {
   const calls: Array<{ fn: "download" | "relabel"; arg: unknown }> = [];
   return {
     calls,
@@ -26,6 +26,7 @@ function makeSpies(opts: { downloadError?: Error } = {}) {
       },
       relabel: async (arg: string) => {
         calls.push({ fn: "relabel", arg });
+        if (opts.relabelError) throw opts.relabelError;
       },
     },
   };
@@ -89,8 +90,8 @@ describe("ensureDatasetAvailable", () => {
     expect(calls).toEqual([]);
   });
 
-  test("env=1 + all required files present: no download attempt", async () => {
-    process.env[AUTO_DOWNLOAD_ENV] = "1";
+  test("env unset + all required files present: strict no-op (no download, no relabel)", async () => {
+    delete process.env[AUTO_DOWNLOAD_ENV];
     const dataRoot = await makeEmptyDataRoot();
     await writeQuestions(dataRoot);
     await writeHaystack(dataRoot, "small");
@@ -99,6 +100,18 @@ describe("ensureDatasetAvailable", () => {
 
     await ensureDatasetAvailable(dataRoot, "small", deps);
     expect(calls).toEqual([]);
+  });
+
+  test("env=1 + all required files present: no download attempt, but relabel runs once to heal a torn prior relabel", async () => {
+    process.env[AUTO_DOWNLOAD_ENV] = "1";
+    const dataRoot = await makeEmptyDataRoot();
+    await writeQuestions(dataRoot);
+    await writeHaystack(dataRoot, "small");
+    await writeTrajectories(dataRoot);
+    const { calls, deps } = makeSpies();
+
+    await ensureDatasetAvailable(dataRoot, "small", deps);
+    expect(calls).toEqual([{ fn: "relabel", arg: dataRoot }]);
   });
 
   test("env=1 + questions.jsonl present but trajectories.jsonl missing: download resumes (regression)", async () => {
@@ -159,5 +172,26 @@ describe("ensureDatasetAvailable", () => {
     await rejection.toThrow(/EVALS_DATA_AUTO_DOWNLOAD/);
     await rejection.toThrow(/network unreachable/);
     expect(calls.map((c) => c.fn)).toEqual(["download"]);
+  });
+
+  test("env=1 + all files present + fast-path relabel rejects: actionable error", async () => {
+    process.env[AUTO_DOWNLOAD_ENV] = "1";
+    const dataRoot = await makeEmptyDataRoot();
+    await writeQuestions(dataRoot);
+    await writeHaystack(dataRoot, "small");
+    await writeTrajectories(dataRoot);
+    const { calls, deps } = makeSpies({
+      relabelError: new Error("haystack re-key failed"),
+    });
+
+    const rejection = expect(
+      ensureDatasetAvailable(dataRoot, "small", deps),
+    ).rejects;
+    await rejection.toThrow(/auto-download failed/);
+    await rejection.toThrow(/xiaowu0162\/longmemeval-v2/);
+    await rejection.toThrow(dataRoot);
+    await rejection.toThrow(/EVALS_DATA_AUTO_DOWNLOAD/);
+    await rejection.toThrow(/haystack re-key failed/);
+    expect(calls).toEqual([{ fn: "relabel", arg: dataRoot }]);
   });
 });

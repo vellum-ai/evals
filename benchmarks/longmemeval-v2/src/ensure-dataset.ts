@@ -24,13 +24,24 @@ interface EnsureDeps {
  * no-op so local dev keeps the loader's explicit "run data/download.ts"
  * error.
  *
- * The completeness check is what makes interrupted-download retries
- * self-heal: a partial download can leave questions.jsonl on disk while
- * the haystack and/or the large trajectories.jsonl are still missing, and
- * a bare questions.jsonl check would skip the retry and fall through to
- * loader / trajectory-reader ENOENT errors. Safe on pod retries:
- * huggingface-cli resumes/hash-skips already-downloaded files, the
- * relabel transform is idempotent, and a re-download of hash-mismatched
+ * Two complementary self-heals make pod retries safe:
+ *
+ * - The file-completeness check heals a kill *during download*: a partial
+ *   download can leave questions.jsonl on disk while the haystack and/or
+ *   the large trajectories.jsonl are still missing, and a bare
+ *   questions.jsonl check would skip the retry and fall through to
+ *   loader / trajectory-reader ENOENT errors.
+ * - Re-running relabel on the all-files-present fast path heals a kill
+ *   *during relabel*: a prior attempt may have rewritten questions.jsonl
+ *   but died before re-keying the haystack JSONs, leaving relabeled
+ *   question ids against raw haystack keys. The relabel transform is a
+ *   cheap, idempotent, local pass over questions.jsonl + the haystack
+ *   JSONs (it never touches the ~7 GB trajectories.jsonl):
+ *   already-relabeled ids miss the label map and pass through, raw ids
+ *   get relabeled.
+ *
+ * Also safe on re-download: huggingface-cli resumes/hash-skips
+ * already-downloaded files, and a re-download of hash-mismatched
  * relabeled files is safely re-relabeled.
  */
 export async function ensureDatasetAvailable(
@@ -49,8 +60,24 @@ export async function ensureDatasetAvailable(
     if (await existsFile(join(dataRoot, file))) present.push(file);
     else missing.push(file);
   }
-  if (missing.length === 0) return;
   if (process.env[AUTO_DOWNLOAD_ENV] !== "1") return;
+
+  if (missing.length === 0) {
+    // Everything is on disk, so skip the download — but a previous pod
+    // attempt may have been killed mid-relabel (questions.jsonl rewritten,
+    // haystacks not yet re-keyed). Relabel is idempotent and cheap, so
+    // always re-run it here to heal that torn state.
+    console.error(
+      "[longmemeval-v2] dataset present — running idempotent relabel to " +
+        "heal any interrupted prior bootstrap.",
+    );
+    try {
+      await deps.relabel(dataRoot);
+    } catch (err) {
+      throw wrapBootstrapError(err, dataRoot);
+    }
+    return;
+  }
 
   const why =
     present.length > 0
@@ -66,16 +93,21 @@ export async function ensureDatasetAvailable(
     await deps.download({ dataRoot });
     await deps.relabel(dataRoot);
   } catch (err) {
-    const cause = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `LongMemEval-V2 dataset auto-download failed (repo ${LONGMEMEVAL_HF_REPO}, ` +
-        `dataRoot ${dataRoot}): ${cause}. Retry the run, pre-stage the dataset ` +
-        `with \`bun run data/download.ts\`, or unset ${AUTO_DOWNLOAD_ENV} to fail fast.`,
-      { cause: err },
-    );
+    throw wrapBootstrapError(err, dataRoot);
   }
   const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
   console.error(
     `[longmemeval-v2] dataset download + relabel complete in ${elapsedSeconds}s.`,
+  );
+}
+
+/** Actionable wrapper shared by the download and fast-path relabel failures. */
+function wrapBootstrapError(err: unknown, dataRoot: string): Error {
+  const cause = err instanceof Error ? err.message : String(err);
+  return new Error(
+    `LongMemEval-V2 dataset auto-download failed (repo ${LONGMEMEVAL_HF_REPO}, ` +
+      `dataRoot ${dataRoot}): ${cause}. Retry the run, pre-stage the dataset ` +
+      `with \`bun run data/download.ts\`, or unset ${AUTO_DOWNLOAD_ENV} to fail fast.`,
+    { cause: err },
   );
 }

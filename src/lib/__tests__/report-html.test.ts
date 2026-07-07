@@ -38,6 +38,7 @@ const sessionDetail: ReportSessionDetail = {
       failedCount: 0,
       runningCount: 0,
       scoreTotal: 1,
+      modelBreakdown: [],
     },
     {
       profileId: "p2",
@@ -46,6 +47,7 @@ const sessionDetail: ReportSessionDetail = {
       failedCount: 0,
       runningCount: 0,
       scoreTotal: 0.5,
+      modelBreakdown: [],
     },
   ],
   tests: [
@@ -1250,6 +1252,10 @@ describe("profile score chart", () => {
           species: "hermes",
           branding: { color: "#C0714F", logo: brandLogo },
         },
+        modelBreakdown: [
+          { model: "claude-sonnet-4", count: 18, pct: 0.9 },
+          { model: "claude-haiku-4", count: 2, pct: 0.1 },
+        ],
       },
       {
         profileId: "p2",
@@ -1258,6 +1264,7 @@ describe("profile score chart", () => {
         failedCount: 0,
         runningCount: 0,
         scoreTotal: 0.5,
+        modelBreakdown: [],
       },
     ],
   };
@@ -1292,6 +1299,18 @@ describe("profile score chart", () => {
     for (const tick of ["100%", "75%", "50%", "25%", "0%"]) {
       expect(html).toContain(`>${tick}<`);
     }
+  });
+
+  test("model breakdown tooltip renders on bars with usage data", () => {
+    const html = renderReportPage({ kind: "session", session: brandedSession });
+    // p1 has a model breakdown; p2 has none.
+    expect(html).toContain("score-chart-tooltip");
+    expect(html).toContain("Model breakdown");
+    expect(html).toContain("90%");
+    expect(html).toContain("claude-sonnet-4");
+    expect(html).toContain("18 reqs");
+    expect(html).toContain("10%");
+    expect(html).toContain("claude-haiku-4");
   });
 
   test("chart is omitted when the session has no profiles", () => {

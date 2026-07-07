@@ -468,6 +468,13 @@ h1 { font-size: clamp(34px, 5vw, 64px); line-height: .95; margin: 10px 0; letter
 .score-chart-logo svg { width: 30px; height: 30px; display: block; }
 .score-chart-monogram { font-size: 20px; font-weight: 900; letter-spacing: -.02em; }
 .score-chart-value { color: #fff; font-size: 19px; font-weight: 800; letter-spacing: -.02em; padding-bottom: 16px; font-variant-numeric: tabular-nums; text-shadow: 0 1px 3px rgba(0,0,0,.3); }
+.score-chart-tooltip { display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); background: #1a1a2e; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; padding: 10px 12px; min-width: 200px; box-shadow: 0 8px 24px rgba(0,0,0,.4); z-index: 10; pointer-events: none; }
+.score-chart-bar:hover .score-chart-tooltip { display: block; }
+.score-chart-tooltip-title { font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+.score-chart-tooltip-row { display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 1.6; }
+.score-chart-tooltip-pct { font-weight: 700; color: #fff; min-width: 32px; font-variant-numeric: tabular-nums; }
+.score-chart-tooltip-model { color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.score-chart-tooltip-count { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .score-chart-labels { display: flex; justify-content: center; gap: 26px; padding-left: 62px; height: 86px; }
 .score-chart-label-col { flex: 1 1 0; max-width: 128px; position: relative; }
 .score-chart-label { position: absolute; top: 14px; right: 50%; transform: rotate(-33deg); transform-origin: top right; white-space: nowrap; color: var(--muted); font-size: 13.5px; font-weight: 700; }
@@ -1041,6 +1048,16 @@ function ProfileScoreChart({
             const logo = safeBrandLogo(branding?.logo);
             const pct = profile.scoreTotal * 100;
             const heightPct = ((pct - lo) / span) * 100;
+            const breakdown = profile.modelBreakdown;
+            const hasBreakdown = breakdown.length > 0;
+            const breakdownTitle = hasBreakdown
+              ? breakdown
+                  .map(
+                    (b) =>
+                      `${(b.pct * 100).toFixed(0)}% ${b.model} (${b.count} reqs)`,
+                  )
+                  .join("\n")
+              : undefined;
             return (
               <div key={profile.profileId} className="score-chart-col">
                 <div
@@ -1051,7 +1068,28 @@ function ProfileScoreChart({
                     height: `max(${heightPct.toFixed(2)}%, 96px)`,
                     background: color,
                   }}
+                  title={breakdownTitle}
                 >
+                  {hasBreakdown && (
+                    <div className="score-chart-tooltip">
+                      <div className="score-chart-tooltip-title">
+                        Model breakdown
+                      </div>
+                      {breakdown.map((b) => (
+                        <div key={b.model} className="score-chart-tooltip-row">
+                          <span className="score-chart-tooltip-pct">
+                            {(b.pct * 100).toFixed(0)}%
+                          </span>
+                          <span className="score-chart-tooltip-model">
+                            {b.model}
+                          </span>
+                          <span className="score-chart-tooltip-count">
+                            {b.count} reqs
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <span
                     className="score-chart-badge"
                     style={{ color: darkenHex(color) }}

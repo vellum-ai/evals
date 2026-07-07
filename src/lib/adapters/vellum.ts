@@ -390,6 +390,11 @@ export class VellumAgent implements BaseAgent {
       // in the catch path.
       hatchSucceeded = true;
 
+      // Snapshot per-container CPU/memory right after hatch so we can
+      // see what the host looked like when this run's containers came
+      // up — especially useful when multiple runs overlap via --workers.
+      await this.captureResourceStats("post-hatch").catch(() => undefined);
+
       for (const [idx, command] of setupCommands(this.profile).entries()) {
         const setup = await this.runner.run(
           this.cliCommand,
@@ -405,6 +410,9 @@ export class VellumAgent implements BaseAgent {
 
       this.hatched = true;
     } catch (err) {
+      // Snapshot resources BEFORE teardown — shows what the host looked
+      // like at the moment of failure (contention? OOM? idle?).
+      await this.captureResourceStats("on-failure").catch(() => undefined);
       // Capture container forensics BEFORE any teardown — once
       // containers are removed, `docker inspect` and `docker logs`
       // both return empty. Best-effort: any failure here (docker not
@@ -484,6 +492,43 @@ export class VellumAgent implements BaseAgent {
         }
       }
     }
+  }
+
+  /**
+   * Capture a `docker stats --no-stream` snapshot for this run's
+   * containers and write it to the run directory. Shows per-container
+   * CPU and memory usage at a single point in time — useful for
+   * diagnosing resource contention when multiple runs execute
+   * concurrently via `--workers N`.
+   *
+   * Best-effort: silently skips if docker isn't available or the
+   * containers are already gone.
+   */
+  private async captureResourceStats(label: string): Promise<void> {
+    const artifacts = runArtifacts(this.id);
+    const siblings = vellumDockerSiblingContainers(this.id);
+    // `docker stats --no-stream` accepts a space-separated list of
+    // container names. `--format` outputs one line per container with
+    // tab-separated fields so the report can render it as a table.
+    const result = await this.runner
+      .run("docker", [
+        "stats",
+        "--no-stream",
+        "--format",
+        "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}",
+        ...siblings,
+      ])
+      .catch(() => undefined);
+    if (!result || result.exitCode !== 0) return;
+    const header =
+      `# docker stats snapshot — ${label}\n` +
+      `# captured at ${new Date().toISOString()}\n` +
+      `# container\tcpu\tmem_usage\tmem_pct\tnet_io\tblock_io\tpids\n`;
+    const content = header + (result.stdout ?? "");
+    await writeFile(
+      join(artifacts.runDir, `docker-stats-${label}.txt`),
+      content,
+    ).catch(() => undefined);
   }
 
   async send(message: AgentMessage): Promise<void> {

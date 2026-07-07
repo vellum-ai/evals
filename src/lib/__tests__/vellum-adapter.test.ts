@@ -199,7 +199,8 @@ describe("VellumAgent", () => {
       logStep: "hatch",
     });
     // Setup command — gets a per-step subprocess-setup-N.log
-    expect(runner.runs[6]).toEqual({
+    // (runs[6] is the post-hatch docker stats snapshot)
+    expect(runner.runs[7]).toEqual({
       command: "vellum",
       args: [
         "exec",
@@ -300,12 +301,13 @@ describe("VellumAgent", () => {
 
     // runs[0..4] are the jail lifecycle (rm / network rm / build /
     // network create / run); runs[5] is hatch joining the assistant
-    // into the jail's namespace. 6 pre-setup steps + 1 setup = 7.
-    expect(runner.runs.length).toBe(7);
+    // into the jail's namespace. 6 pre-setup steps + 1 docker-stats
+    // snapshot (post-hatch) + 1 setup = 8.
+    expect(runner.runs.length).toBe(8);
     expect(runner.runs[5].args[0]).toBe("hatch");
 
-    // Setup command lands right after hatch.
-    expect(runner.runs[6]).toEqual({
+    // Setup command lands after the post-hatch docker stats snapshot.
+    expect(runner.runs[7]).toEqual({
       command: "vellum",
       args: [
         "exec",
@@ -345,8 +347,8 @@ describe("VellumAgent", () => {
     await agent.hatch();
 
     // jail lifecycle (rm / network rm / build / network create / run) +
-    // hatch = 6. No setup commands.
-    expect(runner.runs.length).toBe(6);
+    // hatch + 1 docker-stats snapshot (post-hatch) = 7. No setup commands.
+    expect(runner.runs.length).toBe(7);
     expect(runner.runs[5].args[0]).toBe("hatch");
   });
 

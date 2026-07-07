@@ -84,6 +84,12 @@ export interface ReportRunSummary {
   totalInputTokens?: number;
   totalOutputTokens?: number;
   totalCostUsd?: number;
+  /**
+   * Per-model request counts extracted from the run's usage records,
+   * keyed by model id. Used to render the model-breakdown hover on
+   * profile chart bars. Empty for failed runs with no usage data.
+   */
+  modelRequestCounts?: Record<string, number>;
 }
 
 /**
@@ -180,8 +186,14 @@ export interface SessionProfileAggregate {
   scoreTotal: number;
   /** Sum of every run's wall-clock runtime (ms) — undefined when any run lacks it. */
   totalRuntimeMs?: number;
-  /** Sum of every run's cost (USD cents) — undefined when any run lacks it. */
+  /** Sum of every run's cost (USD) — partial sum, treating missing as 0. */
   totalCostUsd?: number;
+  /**
+   * Model breakdown by request count, aggregated across all runs of
+   * this profile. Each entry is `{ model, count, pct }` sorted by
+   * count descending. Empty when no runs have usage data.
+   */
+  modelBreakdown: Array<{ model: string; count: number; pct: number }>;
 }
 
 /** One test row inside a session detail page. */
@@ -349,6 +361,7 @@ function summarize(input: {
     totalInputTokens: input.usage.totalInputTokens,
     totalOutputTokens: input.usage.totalOutputTokens,
     totalCostUsd: input.usage.totalCostUsd,
+    modelRequestCounts: extractModelRequestCounts(input.usage.requests),
   };
 }
 
@@ -563,13 +576,56 @@ function latest(values: Array<string | undefined>): string | undefined {
   return defined.sort().slice(-1)[0];
 }
 
+/**
+ * Extract per-model request counts from a usage `requests` array.
+ * Each request record may carry a `model` field (string). Records
+ * without one are grouped under "unknown". Returns undefined when
+ * the requests array is empty (failed runs with no usage data).
+ */
+function extractModelRequestCounts(
+  requests: Array<Record<string, unknown>>,
+): Record<string, number> | undefined {
+  if (requests.length === 0) return undefined;
+  const counts: Record<string, number> = {};
+  for (const req of requests) {
+    const model = typeof req["model"] === "string" ? req["model"] : "unknown";
+    counts[model] = (counts[model] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/**
+ * Aggregate per-model request counts across multiple runs into a
+ * sorted breakdown array with percentages.
+ */
+function aggregateModelBreakdown(
+  runs: ReportRunSummary[],
+): Array<{ model: string; count: number; pct: number }> {
+  const counts: Record<string, number> = {};
+  for (const run of runs) {
+    if (!run.modelRequestCounts) continue;
+    for (const [model, count] of Object.entries(run.modelRequestCounts)) {
+      counts[model] = (counts[model] ?? 0) + count;
+    }
+  }
+  const total = Object.values(counts).reduce((sum, c) => sum + c, 0);
+  if (total === 0) return [];
+  return Object.entries(counts)
+    .map(([model, count]) => ({ model, count, pct: count / total }))
+    .sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Mean score across a set of runs, where each run counts equally
+ * regardless of how many metrics it carries. A failed run (no
+ * metrics, scoreTotal 0) contributes 0 to the numerator and 1 to
+ * the denominator, so a profile with 4/16 successful runs scores
+ * 0.25 — not 0.40 (which is what dividing by metricCount would
+ * produce by silently excluding the failures).
+ */
 function aggregateScore(runs: ReportRunSummary[]): number {
-  const metricCount = runs.reduce((sum, run) => sum + run.metricCount, 0);
-  if (metricCount === 0) return 0;
-  return (
-    runs.reduce((sum, run) => sum + run.scoreTotal * run.metricCount, 0) /
-    metricCount
-  );
+  if (runs.length === 0) return 0;
+  return runs.reduce((sum, run) => sum + run.scoreTotal, 0) / runs.length;
 }
 
 function summarizeSession(runs: ReportRunSummary[]): ReportSessionSummary {
@@ -605,15 +661,15 @@ function summarizeSession(runs: ReportRunSummary[]): ReportSessionSummary {
       const ms = Date.parse(end) - Date.parse(start);
       return ms > 0 ? ms : undefined;
     })(),
-    // Sum per-run runtime/cost across the whole session. Undefined when
-    // any run lacks the field (legacy runs) so the UI shows "—" rather
-    // than a misleading partial sum — same rule as `aggregateByProfile`.
+    // Sum per-run runtime/cost. Cost uses a partial sum (treating
+    // undefined as 0) so a handful of failed runs with no usage data
+    // doesn't erase the cost of the runs that did spend. Runtime
+    // keeps the strict all-or-undefined rule because a partial runtime
+    // sum is misleading (it understates total test time).
     totalRuntimeMs: runs.every((run) => run.runtimeMs !== undefined)
       ? runs.reduce((sum, run) => sum + (run.runtimeMs ?? 0), 0)
       : undefined,
-    totalCostUsd: runs.every((run) => run.totalCostUsd !== undefined)
-      ? runs.reduce((sum, run) => sum + (run.totalCostUsd ?? 0), 0)
-      : undefined,
+    totalCostUsd: runs.reduce((sum, run) => sum + (run.totalCostUsd ?? 0), 0),
     scoreTotal: aggregateScore(runs),
     status: deriveSessionStatus(runs),
   };
@@ -671,14 +727,17 @@ function aggregateByProfile(
       runningCount: profileRuns.filter((run) => run.status === "running")
         .length,
       scoreTotal: aggregateScore(profileRuns),
-      // Sum per-run runtime/cost. Undefined when any run lacks the field
-      // (legacy runs) so the UI shows "—" rather than a misleading partial sum.
+      // Sum per-run runtime/cost. Cost uses a partial sum (treating
+      // undefined as 0) so failed runs with no usage data don't erase
+      // the cost of runs that did spend.
       totalRuntimeMs: profileRuns.every((r) => r.runtimeMs !== undefined)
         ? profileRuns.reduce((sum, r) => sum + (r.runtimeMs ?? 0), 0)
         : undefined,
-      totalCostUsd: profileRuns.every((r) => r.totalCostUsd !== undefined)
-        ? profileRuns.reduce((sum, r) => sum + (r.totalCostUsd ?? 0), 0)
-        : undefined,
+      totalCostUsd: profileRuns.reduce(
+        (sum, r) => sum + (r.totalCostUsd ?? 0),
+        0,
+      ),
+      modelBreakdown: aggregateModelBreakdown(profileRuns),
     }))
     .sort((a, b) => a.profileId.localeCompare(b.profileId));
 }

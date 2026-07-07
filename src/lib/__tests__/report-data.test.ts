@@ -335,6 +335,60 @@ describe("report data", () => {
     expect(match).toMatchObject(expected);
   });
 
+  test("failed runs without metrics count as 0 in the session score", async () => {
+    // Round-10 feedback: a profile with 4/16 successful runs should
+    // score 25%, not 40% — failed runs (no metrics) must count as 0
+    // in the denominator, not be silently excluded.
+    const sessionTag = `session-fail-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const runIds = await Promise.all(
+      Array.from({ length: 4 }, (_, i) => freshRunId(`fail-${i}`)),
+    );
+
+    // 1 run with score 1, 1 with score 0, 2 failed (no metrics).
+    await Promise.all([
+      writeRunMetadata(runIds[0]!, {
+        runId: runIds[0]!,
+        sessionId: sessionTag,
+        profileId: "p1",
+        testId: "t1",
+        status: "completed",
+        artifactDir: runArtifacts(runIds[0]!).runDir,
+      }),
+      writeRunMetadata(runIds[1]!, {
+        runId: runIds[1]!,
+        sessionId: sessionTag,
+        profileId: "p1",
+        testId: "t2",
+        status: "completed",
+        artifactDir: runArtifacts(runIds[1]!).runDir,
+      }),
+      writeRunMetadata(runIds[2]!, {
+        runId: runIds[2]!,
+        sessionId: sessionTag,
+        profileId: "p1",
+        testId: "t3",
+        status: "failed",
+        artifactDir: runArtifacts(runIds[2]!).runDir,
+      }),
+      writeRunMetadata(runIds[3]!, {
+        runId: runIds[3]!,
+        sessionId: sessionTag,
+        profileId: "p1",
+        testId: "t4",
+        status: "failed",
+        artifactDir: runArtifacts(runIds[3]!).runDir,
+      }),
+    ]);
+    await writeMetricResults(runIds[0]!, [{ name: "acc", score: 1 }]);
+    await writeMetricResults(runIds[1]!, [{ name: "acc", score: 0 }]);
+
+    const sessions = await listReportSessions();
+    const match = sessions.find((s) => s.sessionId === sessionTag);
+    expect(match).toBeDefined();
+    // (1 + 0 + 0 + 0) / 4 = 0.25, not (1 + 0) / 2 = 0.5.
+    expect(match?.scoreTotal).toBe(0.25);
+  });
+
   test("session summary sums run runtimes and costs, and drops to undefined when any run lacks them", async () => {
     // Round-9 feedback: the overall page shows total duration + total
     // cost. Totals follow the same all-or-undefined rule as the
@@ -430,7 +484,9 @@ describe("report data", () => {
     expect(partial?.totalRuntimeMs).toBe(2000);
     // Wall-clock: 12:00:00 → 12:00:03 = 3s.
     expect(partial?.wallClockMs).toBe(3000);
-    expect(partial?.totalCostUsd).toBeUndefined();
+    // Cost is now a partial sum: run C has $0.25, run D has no usage
+    // (treated as 0), so the session total is $0.25 — not undefined.
+    expect(partial?.totalCostUsd).toBeCloseTo(0.25, 8);
   });
 
   test("cliArgv is captured on each run summary and surfaced on the session summary", async () => {

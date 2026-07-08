@@ -403,6 +403,7 @@ const STRUCTURED_RUN_FILES = new Set<string>([
  */
 const DOCKER_INSPECT_RE = /^docker-inspect-[a-z0-9\-]+\.json$/;
 const DOCKER_LOGS_RE = /^docker-logs-[a-z0-9\-]+\.txt$/;
+const DOCKER_STATS_RE = /^docker-stats-[a-z0-9\-]+\.txt$/;
 
 /**
  * List run-directory files that should be surfaced inline on the
@@ -435,6 +436,10 @@ async function listExtraArtifacts(runDir: string): Promise<{
       continue;
     }
     if (DOCKER_LOGS_RE.test(name)) {
+      dockerNames.push({ name, kind: "text" });
+      continue;
+    }
+    if (DOCKER_STATS_RE.test(name)) {
       dockerNames.push({ name, kind: "text" });
       continue;
     }

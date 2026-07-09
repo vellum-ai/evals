@@ -2,7 +2,7 @@ import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import {
   submitToLauncher,
   pollLauncherStatus,
-  dashboardBaseUrl,
+  resolveBaseUrl,
 } from "../launcher-client";
 
 /**
@@ -98,7 +98,7 @@ describe("launcher-client", () => {
       });
     });
 
-    test("includes filter and imageTag when provided", async () => {
+    test("includes filter and limit when provided", async () => {
       mockFetch([{ status: 201, body: { runId: "r1", status: "pending" } }]);
 
       await submitToLauncher(
@@ -106,7 +106,7 @@ describe("launcher-client", () => {
           profiles: ["a", "b"],
           benchmark: "swe-bench",
           filter: "test-1,test-2",
-          imageTag: "v1.2.3",
+          limit: 5,
         },
         TEST_ENV,
       );
@@ -117,7 +117,7 @@ describe("launcher-client", () => {
       const body = JSON.parse((calls[0][1] as RequestInit).body as string);
       expect(body.profiles).toEqual(["a", "b"]);
       expect(body.filter).toBe("test-1,test-2");
-      expect(body.imageTag).toBe("v1.2.3");
+      expect(body.limit).toBe(5);
     });
 
     test("returns error when QA_AUTH_TOKEN is missing", async () => {
@@ -276,14 +276,14 @@ describe("launcher-client", () => {
     });
   });
 
-  describe("dashboardBaseUrl", () => {
+  describe("resolveBaseUrl", () => {
     test("uses EVAL_RESULTS_UPLOAD_URL when set", () => {
-      expect(dashboardBaseUrl(TEST_ENV)).toBe("https://qa.test.example");
+      expect(resolveBaseUrl(TEST_ENV)).toBe("https://qa.test.example");
     });
 
     test("strips trailing slashes", () => {
       expect(
-        dashboardBaseUrl({
+        resolveBaseUrl({
           EVAL_RESULTS_UPLOAD_URL: "https://qa.test.example//",
           QA_AUTH_TOKEN: "x",
         }),
@@ -291,7 +291,7 @@ describe("launcher-client", () => {
     });
 
     test("defaults to https://qa.vellum.ai", () => {
-      expect(dashboardBaseUrl({})).toBe("https://qa.vellum.ai");
+      expect(resolveBaseUrl({})).toBe("https://qa.vellum.ai");
     });
   });
 });

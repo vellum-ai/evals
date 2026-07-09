@@ -54,7 +54,7 @@ export interface LauncherSubmitInput {
   profiles: string[];
   benchmark: string;
   filter?: string | null;
-  imageTag?: string | null;
+  limit?: number;
 }
 
 /** Result of a launcher submission. */
@@ -72,7 +72,7 @@ export interface LauncherSubmitError {
   runId?: string;
 }
 
-function resolveBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+export function resolveBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
   const { baseUrl } = readDashboardEnv(env);
   return stripTrailingSlashes(baseUrl ?? DEFAULT_DASHBOARD_URL);
 }
@@ -216,12 +216,4 @@ export async function pollLauncherStatus(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Default qa dashboard URL for display purposes (e.g. printing the
- * results link before polling starts).
- */
-export function dashboardBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
-  return resolveBaseUrl(env);
 }

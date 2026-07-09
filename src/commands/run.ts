@@ -15,8 +15,8 @@ import { autoPublishSession } from "../lib/auto-publish";
 import { loadBenchmark } from "../lib/benchmark";
 import { DEFAULT_BENCHMARK_ID } from "../lib/catalog";
 import {
-  dashboardBaseUrl,
   pollLauncherStatus,
+  resolveBaseUrl as launcherBaseUrl,
   submitToLauncher,
 } from "../lib/launcher-client";
 import { loadProfile } from "../lib/profile";
@@ -154,10 +154,6 @@ export function registerRunCommand(program: Command): void {
       "--launcher",
       "Delegate execution to the platform's dedicated eval environment via the qa.vellum.ai launcher API. Instead of running locally, the run is submitted as a Kubernetes Job. Requires QA_AUTH_TOKEN (and optionally EVAL_RESULTS_UPLOAD_URL, defaults to https://qa.vellum.ai).",
     )
-    .option(
-      "--image-tag <tag>",
-      "Override the eval-pod container image tag (only used with --launcher). Defaults to the launcher's configured tag.",
-    )
     .action(
       async (opts: {
         profiles: string;
@@ -172,7 +168,6 @@ export function registerRunCommand(program: Command): void {
         serve?: boolean;
         workers?: number;
         launcher?: boolean;
-        imageTag?: string;
       }) => {
         // Live-events state the signal handlers close over. The handlers
         // are registered before the emitter/bridge exist, so they observe
@@ -267,19 +262,18 @@ export function registerRunCommand(program: Command): void {
           }
 
           const filterValue = filter ?? null;
-          const imageTagValue = opts.imageTag ?? null;
 
           console.log(
             `Submitting to launcher: profiles=[${profileIds.join(", ")}] benchmark=${opts.benchmark}` +
               (filterValue ? ` filter="${filterValue}"` : "") +
-              (imageTagValue ? ` imageTag="${imageTagValue}"` : ""),
+              (opts.limit ? ` limit=${opts.limit}` : ""),
           );
 
           const result = await submitToLauncher({
             profiles: profileIds,
             benchmark: opts.benchmark,
             filter: filterValue,
-            imageTag: imageTagValue,
+            limit: opts.limit,
           });
 
           if (!result.ok) {
@@ -288,7 +282,7 @@ export function registerRunCommand(program: Command): void {
                 `A run with these inputs already exists: runId=${result.runId}`,
               );
               console.error(
-                `View it at: ${dashboardBaseUrl()}/evals/runs/${result.runId}`,
+                `View it at: ${launcherBaseUrl()}/evals/runs/${result.runId}`,
               );
               process.exitCode = 0;
               return;
@@ -298,7 +292,7 @@ export function registerRunCommand(program: Command): void {
             return;
           }
 
-          const resultsUrl = `${dashboardBaseUrl()}/evals/runs/${result.runId}`;
+          const resultsUrl = `${launcherBaseUrl()}/evals/runs/${result.runId}`;
           console.log(`\nRun submitted: ${result.runId}`);
           console.log(`Status: ${result.status}`);
           console.log(`Results: ${resultsUrl}`);

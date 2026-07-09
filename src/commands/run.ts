@@ -14,6 +14,11 @@ import { reapAbandonedEvalContainers } from "../lib/adapters/docker-reaper";
 import { autoPublishSession } from "../lib/auto-publish";
 import { loadBenchmark } from "../lib/benchmark";
 import { DEFAULT_BENCHMARK_ID } from "../lib/catalog";
+import {
+  pollLauncherStatus,
+  resolveBaseUrl as launcherBaseUrl,
+  submitToLauncher,
+} from "../lib/launcher-client";
 import { loadProfile } from "../lib/profile";
 import {
   createRunEventEmitter,
@@ -145,6 +150,10 @@ export function registerRunCommand(program: Command): void {
       "--serve",
       "After the run finishes, start the local report server and open this run's session in the default browser. The server blocks until ctrl-C.",
     )
+    .option(
+      "--launcher",
+      "Delegate execution to the platform's dedicated eval environment via the qa.vellum.ai launcher API. Instead of running locally, the run is submitted as a Kubernetes Job. Requires QA_AUTH_TOKEN (and optionally EVAL_RESULTS_UPLOAD_URL, defaults to https://qa.vellum.ai).",
+    )
     .action(
       async (opts: {
         profiles: string;
@@ -158,6 +167,7 @@ export function registerRunCommand(program: Command): void {
         quiet?: boolean;
         serve?: boolean;
         workers?: number;
+        launcher?: boolean;
       }) => {
         // Live-events state the signal handlers close over. The handlers
         // are registered before the emitter/bridge exist, so they observe
@@ -222,6 +232,101 @@ export function registerRunCommand(program: Command): void {
           });
         }
 
+        // `--tests` is the legacy spelling of `--filter`. Treat it as an
+        // alias against the benchmark's units, but reject the ambiguous
+        // case where both are supplied with different values — we don't
+        // want to silently pick one.
+        let filter = opts.filter;
+        if (opts.tests !== undefined) {
+          console.warn(
+            "[evals] --tests is deprecated; use --benchmark <id> --filter <ids>.",
+          );
+          if (filter !== undefined && filter !== opts.tests) {
+            throw new Error(
+              "Pass either --filter or the deprecated --tests, not both.",
+            );
+          }
+          filter = filter ?? opts.tests;
+        }
+
+        // -----------------------------------------------------------------
+        // Launcher mode: delegate to the platform's dedicated eval
+        // environment instead of running locally. Submit the run via
+        // the qa.vellum.ai trigger API, then poll for status until the
+        // Kubernetes Job reaches a terminal state.
+        // -----------------------------------------------------------------
+        if (opts.launcher) {
+          const profileIds = splitCsv(opts.profiles);
+          if (profileIds.length === 0) {
+            throw new Error("--profiles is empty after splitting on commas");
+          }
+
+          const filterValue = filter ?? null;
+
+          console.log(
+            `Submitting to launcher: profiles=[${profileIds.join(", ")}] benchmark=${opts.benchmark}` +
+              (filterValue ? ` filter="${filterValue}"` : "") +
+              (opts.limit ? ` limit=${opts.limit}` : ""),
+          );
+
+          const result = await submitToLauncher({
+            profiles: profileIds,
+            benchmark: opts.benchmark,
+            filter: filterValue,
+            limit: opts.limit,
+          });
+
+          if (!result.ok) {
+            if (result.runId) {
+              console.error(
+                `A run with these inputs already exists: runId=${result.runId}`,
+              );
+              console.error(
+                `View it at: ${launcherBaseUrl()}/evals/runs/${result.runId}`,
+              );
+              process.exitCode = 0;
+              return;
+            }
+            console.error(`Launcher submission failed: ${result.message}`);
+            process.exitCode = 1;
+            return;
+          }
+
+          const resultsUrl = `${launcherBaseUrl()}/evals/runs/${result.runId}`;
+          console.log(`\nRun submitted: ${result.runId}`);
+          console.log(`Status: ${result.status}`);
+          console.log(`Results: ${resultsUrl}`);
+          console.log("");
+
+          // Poll for status updates until terminal or timeout.
+          let lastStatus: string | undefined;
+          const finalStatus = await pollLauncherStatus(result.runId, {
+            onStatus: (status) => {
+              if (!opts.quiet && status.status !== lastStatus) {
+                lastStatus = status.status;
+                const parts = [`status=${status.status}`];
+                if (status.podPhase) parts.push(`pod=${status.podPhase}`);
+                if (status.startedAt) parts.push(`started=${status.startedAt}`);
+                console.log(`  ${parts.join("  ")}`);
+              }
+            },
+          });
+
+          if (finalStatus) {
+            console.log("");
+            console.log(`Run ${finalStatus.status}: ${finalStatus.resultsRef}`);
+            process.exitCode = finalStatus.status === "failed" ? 1 : 0;
+          } else {
+            console.log("");
+            console.log(
+              "Polling timed out — the run may still be in progress.",
+            );
+            console.log(`Check status at: ${resultsUrl}`);
+            process.exitCode = 1;
+          }
+          return;
+        }
+
         // Before starting a new run, clean up any stale runs that crashed
         // or were killed without properly finalizing their status. This is
         // the async variant — uses the 60s heartbeat threshold, so it only
@@ -251,23 +356,6 @@ export function registerRunCommand(program: Command): void {
           console.warn(
             `[reaper] saw ${reapResult.unparseable.length} eval-prefixed container(s) with unrecognized name shape: ${reapResult.unparseable.join(", ")}`,
           );
-        }
-
-        // `--tests` is the legacy spelling of `--filter`. Treat it as an
-        // alias against the benchmark's units, but reject the ambiguous
-        // case where both are supplied with different values — we don't
-        // want to silently pick one.
-        let filter = opts.filter;
-        if (opts.tests !== undefined) {
-          console.warn(
-            "[evals] --tests is deprecated; use --benchmark <id> --filter <ids>.",
-          );
-          if (filter !== undefined && filter !== opts.tests) {
-            throw new Error(
-              "Pass either --filter or the deprecated --tests, not both.",
-            );
-          }
-          filter = filter ?? opts.tests;
         }
 
         const profiles = await Promise.all(

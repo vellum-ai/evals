@@ -954,6 +954,7 @@ export class HermesAgent implements BaseAgent {
   private async stageWorkspaceFile(input: {
     path: string;
     content: string;
+    encoding?: "utf8" | "base64";
   }): Promise<void> {
     assertSafeWorkspacePath(input.path);
     const containerPath = `${HERMES_WORKSPACE_DIR}/${input.path}`;
@@ -974,6 +975,13 @@ export class HermesAgent implements BaseAgent {
       mkdir,
       `mkdir -p ${containerParent} for ${this.id} workspace file ${input.path}`,
     );
+    // Base64 payloads stay base64 text on stdin (the runner's stdin contract
+    // is UTF-8) and decode to raw bytes inside the container. The path rides
+    // as a positional parameter ("$1"), preserving the no-shell-quoting rule.
+    const writeArgv =
+      input.encoding === "base64"
+        ? ["sh", "-c", 'base64 -d > "$1"', "sh", containerPath]
+        : ["cp", "/dev/stdin", containerPath];
     const write = await this.runner.run(
       "docker",
       [
@@ -982,9 +990,7 @@ export class HermesAgent implements BaseAgent {
         "--user",
         HERMES_RUNTIME_USER,
         this.containerName,
-        "cp",
-        "/dev/stdin",
-        containerPath,
+        ...writeArgv,
       ],
       {
         stdin: input.content,

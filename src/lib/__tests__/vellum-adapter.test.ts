@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
@@ -478,6 +479,54 @@ describe("VellumAgent", () => {
     expect(newRuns[1].args[2]).toBe(
       "eval-run-stage-assistant:/workspace/restaurant-pnl.csv",
     );
+  });
+
+  test("stage-workspace-file base64 payloads decode to raw bytes before docker cp", async () => {
+    // PNG magic + a 0xff byte — not valid UTF-8, so riding the utf8 string
+    // path would corrupt it. The staged host temp file must carry the
+    // decoded original bytes at the moment `docker cp` runs.
+    const bytes = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff,
+    ]);
+    class CpCapturingRunner extends FakeRunner {
+      stagedBytes?: Buffer;
+      override async run(
+        command: string,
+        args: string[],
+        opts?: RunOptions,
+      ): Promise<CommandResult> {
+        // The temp file is deleted right after the cp, so capture the
+        // staged bytes when the workspace-bound cp goes through.
+        if (
+          command === "docker" &&
+          args[0] === "cp" &&
+          String(args[2]).endsWith(":/workspace/IMG_0821.png")
+        ) {
+          this.stagedBytes = readFileSync(args[1]);
+        }
+        return super.run(command, args, opts);
+      }
+    }
+    const runner = new CpCapturingRunner();
+    const agent = new VellumAgent({
+      runner,
+      profile,
+      testId: "transaction-sum-from-images",
+      runId: "eval-run-stage-b64",
+    });
+
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
+
+    await agent.runSetupCommand({
+      type: "stage-workspace-file",
+      path: "IMG_0821.png",
+      content: bytes.toString("base64"),
+      encoding: "base64",
+    });
+
+    expect(runner.stagedBytes).toBeDefined();
+    expect(Buffer.compare(runner.stagedBytes!, bytes)).toBe(0);
   });
 
   test("sends through the same conversation key and shuts down resources", async () => {

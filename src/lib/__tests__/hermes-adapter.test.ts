@@ -555,6 +555,52 @@ describe("HermesAgent", () => {
     expect(newRuns[1].stdin).toBe("Category,Amount (USD)\nLabor,48200\n");
   });
 
+  test("stage-workspace-file base64 payloads stay base64 on stdin and decode inside the container", async () => {
+    // GIVEN a hatched Hermes agent
+    const runner = new FakeRunner();
+    const agent = new HermesAgent({
+      runner,
+      profile,
+      testId: "transaction-sum-from-images",
+      runId: "eval-hermes-stage-b64",
+      processEnv: {},
+    });
+
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
+    const baseline = runner.runs.length;
+
+    // WHEN a binary file is staged via base64
+    const payload = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff,
+    ]).toString("base64");
+    await agent.runSetupCommand({
+      type: "stage-workspace-file",
+      path: "IMG_0821.png",
+      content: payload,
+      encoding: "base64",
+    });
+    const newRuns = runner.runs.slice(baseline);
+
+    // THEN the runner's stdin carries the base64 text (its contract is
+    // UTF-8) and the container-side command decodes it to raw bytes, with
+    // the target path riding as a positional parameter — never interpolated
+    // into the shell script.
+    expect(newRuns[1].args).toEqual([
+      "exec",
+      "-i",
+      "--user",
+      "hermes",
+      "eval-hermes-stage-b64-hermes",
+      "sh",
+      "-c",
+      'base64 -d > "$1"',
+      "sh",
+      "/workspace/IMG_0821.png",
+    ]);
+    expect(newRuns[1].stdin).toBe(payload);
+  });
+
   test("seed-conversation surfaces the in-container error when state.db write fails", async () => {
     class BrokenSeedRunner extends FakeRunner {
       override async run(

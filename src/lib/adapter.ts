@@ -57,6 +57,12 @@ export interface WorkspaceFileWrite {
   path: string;
   /** Bytes to write. UTF-8 strings are written as-is. */
   content: string;
+  /**
+   * How `content` encodes the file's bytes. `"utf8"` (default) writes the
+   * string as-is; `"base64"` decodes it first, for binary payloads (images,
+   * PDFs) that can't survive a round-trip through a UTF-8 string.
+   */
+  encoding?: "utf8" | "base64";
 }
 
 /**

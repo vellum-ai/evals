@@ -24,4 +24,10 @@ export type TestSetupCommand =
       type: "stage-workspace-file";
       path: string;
       content: string;
+      /**
+       * How `content` encodes the file's bytes. `"utf8"` (default) writes
+       * the string as-is; `"base64"` decodes it first, for binary fixtures
+       * (images, PDFs) that can't ride a UTF-8 string without corruption.
+       */
+      encoding?: "utf8" | "base64";
     };

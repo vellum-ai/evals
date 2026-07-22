@@ -602,6 +602,7 @@ export class VellumAgent implements BaseAgent {
         await this.writeWorkspaceFile({
           path: command.path,
           content: command.content,
+          encoding: command.encoding,
         });
         break;
       }
@@ -633,7 +634,14 @@ export class VellumAgent implements BaseAgent {
       containerPath.lastIndexOf("/"),
     );
     try {
-      await writeFile(stagePath, input.content, "utf8");
+      // Base64 payloads decode to raw bytes; UTF-8 strings write as-is.
+      // `docker cp` moves bytes either way, so binary fixtures survive.
+      await writeFile(
+        stagePath,
+        input.encoding === "base64"
+          ? Buffer.from(input.content, "base64")
+          : input.content,
+      );
       // Create the destination parent dir inside the container so
       // `docker cp` doesn't error on intermediate paths that don't
       // exist yet (e.g. `inputs/longmemeval/<id>/`).

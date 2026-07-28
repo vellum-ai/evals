@@ -120,7 +120,7 @@ import { assertSafeWorkspacePath } from "./workspace-path";
  * We pin to a `:vYYYY.M.D` tag until the evals suite is in a steady state
  * so eval reruns are reproducible. Bump intentionally, not by accident.
  */
-export const DEFAULT_HERMES_IMAGE = "nousresearch/hermes-agent:v2026.6.19";
+export const DEFAULT_HERMES_IMAGE = "nousresearch/hermes-agent:v2026.7.20";
 /**
  * Tag for the locally-built image derived from {@link DEFAULT_HERMES_IMAGE}.
  * The derived image bakes Hermes's lazy-installed provider SDKs (see

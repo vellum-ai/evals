@@ -19,6 +19,7 @@
  */
 
 import { readDashboardEnv, stripTrailingSlashes } from "./dashboard-env";
+import { proxyAwareFetch } from "./proxy-fetch";
 
 /** Default qa dashboard URL when the env var is not set. */
 const DEFAULT_DASHBOARD_URL = "https://qa.vellum.ai";
@@ -107,14 +108,18 @@ export async function submitToLauncher(
 
   let res: Response;
   try {
-    res = await fetch(`${baseUrl}/api/evals/trigger`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${authToken}`,
-        "Content-Type": "application/json",
+    res = await proxyAwareFetch(
+      `${baseUrl}/api/evals/trigger`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(input),
       },
-      body: JSON.stringify(input),
-    });
+      env,
+    );
   } catch (err) {
     return {
       ok: false,
@@ -185,9 +190,10 @@ export async function pollLauncherStatus(
   while (Date.now() < deadline) {
     let res: Response;
     try {
-      res = await fetch(
+      res = await proxyAwareFetch(
         `${baseUrl}/api/evals/status/${encodeURIComponent(runId)}`,
         { headers: { Authorization: `Bearer ${authToken}` } },
+        opts.env,
       );
     } catch {
       // Network hiccup — wait and retry.

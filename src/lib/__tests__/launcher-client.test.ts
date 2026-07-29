@@ -120,6 +120,33 @@ describe("launcher-client", () => {
       expect(body.limit).toBe(5);
     });
 
+    test("forwards workers when provided", async () => {
+      mockFetch([{ status: 201, body: { runId: "r1", status: "pending" } }]);
+
+      await submitToLauncher(
+        { profiles: ["a"], benchmark: "b", workers: 4 },
+        TEST_ENV,
+      );
+
+      const calls = (
+        globalThis.fetch as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls;
+      const body = JSON.parse((calls[0][1] as RequestInit).body as string);
+      expect(body.workers).toBe(4);
+    });
+
+    test("omits workers from the payload when not provided", async () => {
+      mockFetch([{ status: 201, body: { runId: "r1", status: "pending" } }]);
+
+      await submitToLauncher({ profiles: ["a"], benchmark: "b" }, TEST_ENV);
+
+      const calls = (
+        globalThis.fetch as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls;
+      const body = JSON.parse((calls[0][1] as RequestInit).body as string);
+      expect("workers" in body).toBe(false);
+    });
+
     test("returns error when QA_AUTH_TOKEN is missing", async () => {
       const result = await submitToLauncher(
         { profiles: ["a"], benchmark: "b" },

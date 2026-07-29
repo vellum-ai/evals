@@ -142,7 +142,7 @@ export function registerRunCommand(program: Command): void {
     )
     .option(
       "--workers <n>",
-      "Number of concurrent runs to execute in parallel (default: 1). Each unit hatches its own container(s), so set this according to host resources.",
+      "Number of concurrent runs to execute in parallel (default: 1). Each unit hatches its own container(s), so set this according to host resources. Also honored with --launcher, where it is forwarded to the eval pod.",
       (value) => Number(value),
       1,
     )
@@ -263,10 +263,22 @@ export function registerRunCommand(program: Command): void {
 
           const filterValue = filter ?? null;
 
+          // `--workers` is validated below for the local path too, but the
+          // launcher path returns before reaching it — so validate here as
+          // well rather than forwarding a bad value to the platform.
+          if (opts.workers !== undefined) {
+            if (!Number.isInteger(opts.workers) || opts.workers <= 0) {
+              throw new Error(
+                `--workers must be a positive integer (got "${opts.workers}")`,
+              );
+            }
+          }
+
           console.log(
             `Submitting to launcher: profiles=[${profileIds.join(", ")}] benchmark=${opts.benchmark}` +
               (filterValue ? ` filter="${filterValue}"` : "") +
-              (opts.limit ? ` limit=${opts.limit}` : ""),
+              (opts.limit ? ` limit=${opts.limit}` : "") +
+              (opts.workers ? ` workers=${opts.workers}` : ""),
           );
 
           const result = await submitToLauncher({
@@ -274,6 +286,7 @@ export function registerRunCommand(program: Command): void {
             benchmark: opts.benchmark,
             filter: filterValue,
             limit: opts.limit,
+            workers: opts.workers,
           });
 
           if (!result.ok) {

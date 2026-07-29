@@ -56,6 +56,12 @@ export interface LauncherSubmitInput {
   benchmark: string;
   filter?: string | null;
   limit?: number;
+  /**
+   * Concurrent (profile, unit) executions the eval pod should run, forwarded
+   * as `evals run --workers <n>` inside the pod. Omitted means the launcher
+   * applies its own default (the harness falls back to 1 — fully sequential).
+   */
+  workers?: number;
 }
 
 /** Result of a launcher submission. */

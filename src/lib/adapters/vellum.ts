@@ -1,5 +1,5 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import type {
@@ -31,6 +31,7 @@ import {
   type SpawnedProcess,
 } from "../runtime/command-runner";
 import { parseNdjson } from "../runtime/ndjson";
+import { pathExists } from "../fs";
 import { assertSafeWorkspacePath } from "./workspace-path";
 import { inlineAppDist } from "./vellum-app-page";
 
@@ -94,12 +95,29 @@ function selectProviderEnv(source: NodeJS.ProcessEnv): Record<string, string> {
 }
 
 /**
- * Absolute path to the vellum-assistant repo root, derived from this file's
- * location (`evals/src/lib/adapters/vellum.ts` → repo root via four `..`s).
- * Passed to `vellum hatch --source <path>` so each eval run builds CLI/daemon
- * images from the local source tree.
+ * Absolute path to the vellum-assistant checkout each eval run builds its
+ * CLI/daemon images from, passed to `vellum hatch --source <path>`.
+ *
+ * Defaults to the repo root derived from this file's location
+ * (`evals/src/lib/adapters/vellum.ts` → repo root via four `..`s), which is
+ * correct when the harness lives inside a vellum-assistant checkout.
+ *
+ * `EVALS_VELLUM_SOURCE` overrides it with an absolute path to any other
+ * checkout: the standalone evals repo has no vellum-assistant source above
+ * it, and comparing a feature branch against `main` means pointing successive
+ * runs at different worktrees. The value must be absolute so it means the
+ * same thing regardless of the process's cwd.
  */
-function repoRootFromAdapter(): string {
+function repoRootFromAdapter(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.EVALS_VELLUM_SOURCE?.trim();
+  if (override) {
+    if (!isAbsolute(override)) {
+      throw new Error(
+        `EVALS_VELLUM_SOURCE must be an absolute path to a vellum-assistant checkout, got "${override}"`,
+      );
+    }
+    return resolve(override);
+  }
   return resolve(import.meta.dir, "..", "..", "..", "..");
 }
 
@@ -345,7 +363,7 @@ export class VellumAgent implements BaseAgent {
         // resolvable here.
         pluginFixturesDir: livePluginInstall
           ? undefined
-          : resolve(repoRootFromAdapter(), "plugins"),
+          : resolve(repoRootFromAdapter(this.processEnv), "plugins"),
       });
 
       // Forward LLM provider API keys from the eval process env into the
@@ -368,7 +386,7 @@ export class VellumAgent implements BaseAgent {
           "--remote",
           "docker",
           "--source",
-          repoRootFromAdapter(),
+          repoRootFromAdapter(this.processEnv),
           "--name",
           this.id,
           "--netns-container",
@@ -394,6 +412,11 @@ export class VellumAgent implements BaseAgent {
       // see what the host looked like when this run's containers came
       // up — especially useful when multiple runs overlap via --workers.
       await this.captureResourceStats("post-hatch").catch(() => undefined);
+
+      // Profile-supplied initial workspace lands before any setup command
+      // runs, so a setup command can read (or a workspace-resolved
+      // subsystem can pick up) whatever the profile staged.
+      await this.stageProfileWorkspace();
 
       for (const [idx, command] of setupCommands(this.profile).entries()) {
         const setup = await this.runner.run(
@@ -438,6 +461,37 @@ export class VellumAgent implements BaseAgent {
       // than risk tearing down a healthy parallel run.
       throw err;
     }
+  }
+
+  /**
+   * Copy the profile's `workspace/` directory into the assistant
+   * container's workspace root, preserving the directory tree.
+   *
+   * This is what makes a profile's initial workspace real: a profile that
+   * ships `workspace/skills/<id>/SKILL.md` gets that skill visible to the
+   * assistant, which is how skill-content ablations are expressed as
+   * profile variation rather than as a source-tree edit.
+   *
+   * `docker cp <dir>/. <container>:/workspace` copies the directory's
+   * *contents* into an existing destination, so files merge into the
+   * workspace the daemon already provisioned instead of nesting under a
+   * `workspace/workspace/` subdirectory.
+   *
+   * A profile with no `workspace/` directory is the common case and a
+   * silent no-op.
+   */
+  private async stageProfileWorkspace(): Promise<void> {
+    const source = this.profile.workspaceDir;
+    if (!(await pathExists(source))) return;
+    const copy = await this.runner.run("docker", [
+      "cp",
+      `${source}/.`,
+      `${this.assistantContainerName}:${CONTAINER_WORKSPACE_DIR}`,
+    ]);
+    assertSuccess(
+      copy,
+      `stage profile ${this.profile.id} workspace into ${this.id}`,
+    );
   }
 
   /**

@@ -1,0 +1,8 @@
+{
+  "species": "vellum",
+  "description": "Vellum Assistant with a workspace copy of the visualize skill that shadows the bundled one by directory id. Ablation arm for a SKILL.md variant; the variant text is the independent variable, everything else matches vellum-viz-baseline.",
+  "branding": {
+    "color": "#2E9A4E",
+    "logo": "<svg viewBox=\"43 45 89.2 92.1\" xmlns=\"http://www.w3.org/2000/svg\"><path fill=\"currentColor\" d=\"M65.2927 45L87.5854 93.3893L109.79 45H132.171L87.4084 137.09L43 45H65.2927Z\"/></svg>"
+  }
+}

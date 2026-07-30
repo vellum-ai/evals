@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { describe, expect, test } from "bun:test";
@@ -1420,5 +1421,127 @@ describe("normalizeVellumEventStream", () => {
     );
     expect(out[0]?.message.text).toBeUndefined();
     expect(out[1]?.message.text).toBeUndefined();
+  });
+});
+
+describe("VellumAgent source override", () => {
+  test("EVALS_VELLUM_SOURCE replaces the derived repo root for --source", async () => {
+    const runner = new FakeRunner();
+    const source = await mkdtemp(join(tmpdir(), "evals-vellum-source-"));
+    const agent = new VellumAgent({
+      runner,
+      cliCommand: "vellum",
+      profile,
+      testId: "timeline-recall",
+      runId: "eval-source-override",
+      processEnv: { EVALS_VELLUM_SOURCE: source },
+    });
+
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
+
+    const hatchCall = runner.runs.find(
+      (call) => call.command === "vellum" && call.args[0] === "hatch",
+    );
+    const sourceIdx = hatchCall?.args.indexOf("--source") ?? -1;
+    expect(hatchCall?.args[sourceIdx + 1]).toBe(source);
+    // The mock-github plugin fixture mount follows the same root, so an
+    // override run installs plugins from the overridden checkout too.
+    const jailStart = runner.runs[4];
+    expect(jailStart.args.join(" ")).toContain(`${source}/plugins`);
+  });
+
+  test("a relative EVALS_VELLUM_SOURCE is rejected rather than resolved against cwd", async () => {
+    const runner = new FakeRunner();
+    const agent = new VellumAgent({
+      runner,
+      cliCommand: "vellum",
+      profile,
+      testId: "timeline-recall",
+      runId: "eval-source-relative",
+      processEnv: { EVALS_VELLUM_SOURCE: "../elsewhere" },
+    });
+
+    await preStageRecordingCa(agent.id);
+    await expect(agent.hatch()).rejects.toThrow(/must be an absolute path/);
+  });
+
+  test("an unset override keeps the derived repo root", async () => {
+    const runner = new FakeRunner();
+    const agent = new VellumAgent({
+      runner,
+      cliCommand: "vellum",
+      profile,
+      testId: "timeline-recall",
+      runId: "eval-source-default",
+      processEnv: {},
+    });
+
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
+
+    const hatchCall = runner.runs.find(
+      (call) => call.command === "vellum" && call.args[0] === "hatch",
+    );
+    const sourceIdx = hatchCall?.args.indexOf("--source") ?? -1;
+    expect(hatchCall?.args[sourceIdx + 1]).toBe(ADAPTER_REPO_ROOT);
+  });
+});
+
+describe("VellumAgent profile workspace staging", () => {
+  test("a profile workspace directory is copied into the container before setup runs", async () => {
+    const runner = new FakeRunner();
+    const workspaceDir = await mkdtemp(join(tmpdir(), "evals-profile-ws-"));
+    await mkdir(join(workspaceDir, "skills", "visualize"), { recursive: true });
+    await writeFile(
+      join(workspaceDir, "skills", "visualize", "SKILL.md"),
+      "---\nname: visualize\ndescription: variant\n---\n",
+    );
+    const agent = new VellumAgent({
+      runner,
+      cliCommand: "vellum",
+      profile: { ...profile, id: "vellum-viz-variant", workspaceDir },
+      testId: "explain-mechanism",
+      runId: "eval-workspace-stage",
+      processEnv: {},
+    });
+
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
+
+    const copyIndex = runner.runs.findIndex(
+      (call) => call.command === "docker" && call.args[0] === "cp",
+    );
+    expect(copyIndex).toBeGreaterThan(-1);
+    expect(runner.runs[copyIndex].args).toEqual([
+      "cp",
+      `${workspaceDir}/.`,
+      "eval-workspace-stage-assistant:/workspace",
+    ]);
+    const setupIndex = runner.runs.findIndex(
+      (call) => call.command === "vellum" && call.args[0] === "exec",
+    );
+    expect(copyIndex).toBeLessThan(setupIndex);
+  });
+
+  test("a profile with no workspace directory stages nothing", async () => {
+    const runner = new FakeRunner();
+    const agent = new VellumAgent({
+      runner,
+      cliCommand: "vellum",
+      profile,
+      testId: "explain-mechanism",
+      runId: "eval-workspace-absent",
+      processEnv: {},
+    });
+
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
+
+    expect(
+      runner.runs.some(
+        (call) => call.command === "docker" && call.args[0] === "cp",
+      ),
+    ).toBe(false);
   });
 });

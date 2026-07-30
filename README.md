@@ -75,11 +75,15 @@ evals/
 │   │       └── timeline-recall/
 │   │           ├── SPEC.md  # simulator briefing
 │   │           └── metrics/ # (optional) per-metric `.ts` scorers
-│   └── longmemeval-v2/
-│       ├── manifest.json    # displayName + unitDirName + unitNoun
-│       ├── data/            # gitignored; populate via `data/download.sh`
-│       ├── items/           # virtual unit dir — items materialized by `src/loader.ts`
-│       └── src/             # benchmark-local code (loader, fixtures, tests)
+│   ├── longmemeval-v2/
+│   │   ├── manifest.json    # displayName + unitDirName + unitNoun
+│   │   ├── data/            # gitignored; populate via `data/download.sh`
+│   │   ├── items/           # virtual unit dir — items materialized by `src/loader.ts`
+│   │   └── src/             # benchmark-local code (loader, fixtures, tests)
+│   └── visualize-composition/
+│       ├── manifest.json
+│       ├── scenarios/       # one-turn SPEC.md units + metric re-exports
+│       └── src/             # benchmark-local metric implementations
 ├── .env.example             # API key contract
 ├── package.json
 └── AGENTS.md                # Conventions
@@ -100,7 +104,23 @@ A profile lives at `profiles/<id>/`. The directory name is the profile id.
 
 Run `evals profiles list` to see all committed profiles and their setup.
 
-`workspace/` (optional) holds files dropped into the agent's workspace before the run starts.
+`workspace/` (optional) holds files copied into the agent's workspace root
+after the agent is hatched and before its setup commands run. The tree is
+preserved, so `profiles/<id>/workspace/skills/<skill-id>/SKILL.md` lands at
+`$VELLUM_WORKSPACE_DIR/skills/<skill-id>/SKILL.md` and shadows a bundled
+skill of the same directory id. That is how skill-content ablations are
+expressed as profile variation rather than as edits to the source tree.
+
+## Environment
+
+`ANTHROPIC_API_KEY` is required by the user simulator. `.env.example`
+documents the rest; the one worth knowing about up front is
+`EVALS_VELLUM_SOURCE`, an absolute path to the vellum-assistant checkout
+that `vellum hatch --source` builds its images from. It defaults to the
+repo root four levels above `src/lib/adapters/vellum.ts`, which is only
+correct when the harness lives inside a vellum-assistant checkout, so set
+it when running from the standalone evals repo or when pointing successive
+runs at different worktrees to compare branches.
 
 ## Benchmark
 

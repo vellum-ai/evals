@@ -1,1 +1,7 @@
 .runs/
+
+# Skill files staged into an agent's workspace are verbatim copies of the
+# assistant's own SKILL.md and references, and in an ablation profile they
+# are the experiment's control text. Reformatting them would silently
+# change the independent variable.
+profiles/*/workspace/skills/

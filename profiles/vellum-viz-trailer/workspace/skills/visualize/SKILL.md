@@ -18,11 +18,6 @@ metadata:
       - "Durable apps or tools the user will reopen and keep using — use the app-builder skill"
 ---
 
-<!-- TODO-VARIANT: this file is a verbatim copy of the bundled visualize
-     SKILL.md. Replace the body below with this arm's variant text. The
-     marker must stay below the YAML frontmatter: the skill loader anchors
-     its frontmatter regex at the very first character of the file. -->
-
 You are authoring a self-contained HTML fragment that renders inline in the chat transcript, directly beneath the paragraph you are writing. It renders in a sandboxed frame sized to your content, with the host's design tokens injected, so it looks native in both light and dark mode.
 
 ## Invocation
@@ -42,8 +37,6 @@ ui_show {
 - If ui_show returns an error, read it, fix the arguments, and call ui_show again. Every rejection is about the arguments you sent and is fixable in the next call. Never reach for the shell, a file, or a log to diagnose it, and never narrate the attempts in your reply — the user should see the visual, not the retries.
 
 Prose goes in your reply, the visual goes in the tool: no titles, headings, intros, captions, or explanatory paragraphs inside the fragment. The chat message around it carries all of that.
-
-Pick the form and sketch the structure in a sentence or two of thought, then write the fragment. The fragment is written IN the ui_show call — once the form is chosen, emit the call and compose the markup there. Never draft it in your reasoning: markup written in thought has to be written again in the call, and a long enough draft runs out of tokens before the call is ever made. Do not deliberate at length and do not draft competing versions in your head — the validator catches mistakes and another call is cheap, so a thought budget spent weighing options is a budget that produces nothing on screen.
 
 ## Not this skill
 
@@ -388,3 +381,7 @@ Read the reference for the form you are drawing BEFORE authoring it, with `file_
 - `mockup.md` — cards, records, forms, settings panels, faux screens. Metric tiles, badges, list rows, faux viewport for modals and phones.
 
 Read a second reference when a visual mixes forms — a stepper whose panels contain a chart needs both.
+
+## Now compose
+
+Everything you need is above. Your next action is the ui_show call itself: read one reference if the form calls for it, then go straight to the call. Reasoning is for picking the form and sketching the layout in a few short sentences, never for writing markup. Markup written in reasoning does not render, does not count as showing the user anything, and has to be written all over again inside the call, so a draft there spends the entire budget and produces nothing on screen. Compose the fragment for the first time inside `data.html` as you write the call. One short thought, then the call.

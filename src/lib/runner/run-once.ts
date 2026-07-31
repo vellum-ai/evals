@@ -19,6 +19,7 @@ import {
   writeRunMetadata,
   writeUsage,
 } from "../metrics";
+import type { PhaseDirective } from "../phase-directive";
 import type { Profile } from "../profile";
 import type { TestDef } from "../test-def";
 import type { TranscriptTurn } from "../transcript";
@@ -495,7 +496,7 @@ export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
       message: "Subscribing to assistant events",
       detail: agent.conversationKey,
     });
-    const collector = new AgentEventCollector(
+    let collector = new AgentEventCollector(
       agent.events()[Symbol.asyncIterator](),
     );
     progress({
@@ -511,171 +512,227 @@ export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
     // quiet-window cutoff.
     const runDeadline = Date.now() + RUN_MAX_MS;
 
-    for (;;) {
-      const simulatorTurns = (await readTranscript(input.runId)).filter(
-        (turn) => turn.role === "simulator",
-      ).length;
-      progress({
-        step: "simulator",
-        status: "start",
-        // Turn number is rendered by the reporter as the `turn N` suffix —
-        // keeping it out of the message avoids the doubled `turn 2  turn 2`
-        // output observed in `eval-vellum-bare-timeline-recall-
-        // 20260520135745`.
-        message: "Asking simulator",
-        turn: simulatorTurns + 1,
-      });
-      const decision = await simulator.decide({
-        test: input.test,
-        transcript: await readTranscript(input.runId),
-      });
-      if (decision.action === "end") {
+    // Phase plan: SPEC.md always drives phase 1; a SPEC.phase2.md adds a
+    // second simulator conversation, preceded by the test's between-phase
+    // directives (background learning passes, conversation rotation). The
+    // wall-clock budget above spans all phases.
+    const phases = [
+      { specPath: input.test.specPath, directives: [] as PhaseDirective[] },
+      ...(input.test.phase2SpecPath !== undefined
+        ? [
+            {
+              specPath: input.test.phase2SpecPath,
+              directives: input.test.betweenPhaseDirectives,
+            },
+          ]
+        : []),
+    ];
+    for (const [phaseIndex, phase] of phases.entries()) {
+      // The simulator is briefed by the current phase's SPEC; everything
+      // else on the test def (id, metrics, setup) is phase-independent.
+      const phaseTest = { ...input.test, specPath: phase.specPath };
+      for (const directive of phase.directives) {
+        progress({
+          step: "phase",
+          status: "start",
+          message: `Running ${directive.type}`,
+          detail: `before phase ${phaseIndex + 1}`,
+        });
+        if (directive.type === "trigger-retrospective") {
+          if (typeof agent.triggerRetrospective !== "function") {
+            throw new Error(
+              `profile ${input.profile.id}'s adapter does not support the trigger-retrospective directive`,
+            );
+          }
+          await agent.triggerRetrospective();
+        } else {
+          if (typeof agent.newConversation !== "function") {
+            throw new Error(
+              `profile ${input.profile.id}'s adapter does not support the new-conversation directive`,
+            );
+          }
+          await agent.newConversation();
+          // The adapter rotated its event stream to the fresh
+          // conversation; the old collector is bound to the dead stream,
+          // so resubscribe before the next phase's first turn.
+          collector = new AgentEventCollector(
+            agent.events()[Symbol.asyncIterator](),
+          );
+        }
+        progress({
+          step: "phase",
+          status: "done",
+          message: `${directive.type} complete`,
+          detail: `before phase ${phaseIndex + 1}`,
+        });
+      }
+
+      for (;;) {
+        const simulatorTurns = (await readTranscript(input.runId)).filter(
+          (turn) => turn.role === "simulator",
+        ).length;
+        progress({
+          step: "simulator",
+          status: "start",
+          // Turn number is rendered by the reporter as the `turn N` suffix —
+          // keeping it out of the message avoids the doubled `turn 2  turn 2`
+          // output observed in `eval-vellum-bare-timeline-recall-
+          // 20260520135745`.
+          message: "Asking simulator",
+          turn: simulatorTurns + 1,
+        });
+        const decision = await simulator.decide({
+          test: phaseTest,
+          transcript: await readTranscript(input.runId),
+        });
+        if (decision.action === "end") {
+          progress({
+            step: "simulator",
+            status: "done",
+            message: "Simulator ended the run",
+            detail: decision.reason,
+            turn: simulatorTurns + 1,
+          });
+          break;
+        }
+        // No `pendingConfirmation` was supplied, so the simulator's only valid
+        // moves are sending the next user message or ending; a `confirm` here
+        // means the contract changed under us.
+        if (decision.action !== "send") {
+          throw new Error(
+            `simulator returned an unexpected "${decision.action}" decision at the turn boundary`,
+          );
+        }
         progress({
           step: "simulator",
           status: "done",
-          message: "Simulator ended the run",
-          detail: decision.reason,
+          message: "Simulator produced the next user message",
           turn: simulatorTurns + 1,
         });
-        break;
-      }
-      // No `pendingConfirmation` was supplied, so the simulator's only valid
-      // moves are sending the next user message or ending; a `confirm` here
-      // means the contract changed under us.
-      if (decision.action !== "send") {
-        throw new Error(
-          `simulator returned an unexpected "${decision.action}" decision at the turn boundary`,
-        );
-      }
-      progress({
-        step: "simulator",
-        status: "done",
-        message: "Simulator produced the next user message",
-        turn: simulatorTurns + 1,
-      });
 
-      progress({
-        step: "send",
-        status: "start",
-        message: "Sending simulator message",
-        turn: simulatorTurns + 1,
-      });
-      // Shadow with a const so TS can carry the post-assign narrowing
-      // into the closure below — `agent` is `let`-typed at the outer
-      // scope (so catch + finally can guard `if (agent)` against
-      // pre-assignment throws), and TS won't propagate that narrowing
-      // across a function boundary on its own.
-      const sendingAgent = agent;
-      // Resolve tool confirmations through the simulator. The agent
-      // legitimately reaches for tools above the auto-approve risk
-      // threshold, and a headless hatch has no interactive approver, so
-      // the simulator — which plays the user — decides whether the tool
-      // advances the SPEC's goal. Without an answer the turn-completion
-      // signal would never arrive and the run would burn its whole
-      // wall-clock budget. A failed decision falls back to allow (and is
-      // logged) so a transient simulator error can't hang the run.
-      const respondToConfirmation = async (
-        event: AgentEvent,
-      ): Promise<void> => {
-        const requestId = confirmationRequestId(event);
-        if (
-          requestId === undefined ||
-          typeof sendingAgent.confirm !== "function"
-        ) {
-          return;
-        }
-        let decision: "allow" | "deny" = "allow";
-        try {
-          const verdict = await simulator.decide({
-            test: input.test,
-            transcript: await readTranscript(input.runId),
-            pendingConfirmation: {
-              toolName: event.message.toolName ?? "",
-              input: event.message.input ?? {},
-              riskLevel: event.message.riskLevel,
-              riskReason: event.message.riskReason,
-            },
-          });
-          if (verdict.action === "confirm") {
-            decision = verdict.decision;
-          } else {
+        progress({
+          step: "send",
+          status: "start",
+          message: "Sending simulator message",
+          turn: simulatorTurns + 1,
+        });
+        // Shadow with a const so TS can carry the post-assign narrowing
+        // into the closure below — `agent` is `let`-typed at the outer
+        // scope (so catch + finally can guard `if (agent)` against
+        // pre-assignment throws), and TS won't propagate that narrowing
+        // across a function boundary on its own.
+        const sendingAgent = agent;
+        // Resolve tool confirmations through the simulator. The agent
+        // legitimately reaches for tools above the auto-approve risk
+        // threshold, and a headless hatch has no interactive approver, so
+        // the simulator — which plays the user — decides whether the tool
+        // advances the SPEC's goal. Without an answer the turn-completion
+        // signal would never arrive and the run would burn its whole
+        // wall-clock budget. A failed decision falls back to allow (and is
+        // logged) so a transient simulator error can't hang the run.
+        const respondToConfirmation = async (
+          event: AgentEvent,
+        ): Promise<void> => {
+          const requestId = confirmationRequestId(event);
+          if (
+            requestId === undefined ||
+            typeof sendingAgent.confirm !== "function"
+          ) {
+            return;
+          }
+          let decision: "allow" | "deny" = "allow";
+          try {
+            const verdict = await simulator.decide({
+              test: phaseTest,
+              transcript: await readTranscript(input.runId),
+              pendingConfirmation: {
+                toolName: event.message.toolName ?? "",
+                input: event.message.input ?? {},
+                riskLevel: event.message.riskLevel,
+                riskReason: event.message.riskReason,
+              },
+            });
+            if (verdict.action === "confirm") {
+              decision = verdict.decision;
+            } else {
+              console.warn(
+                `[run-once] simulator returned ${verdict.action} for confirmation ${requestId}, defaulting to allow`,
+              );
+            }
+          } catch (err) {
             console.warn(
-              `[run-once] simulator returned ${verdict.action} for confirmation ${requestId}, defaulting to allow`,
+              `[run-once] simulator failed to decide confirmation ${requestId}, defaulting to allow: ` +
+                (err instanceof Error ? err.message : String(err)),
             );
           }
-        } catch (err) {
-          console.warn(
-            `[run-once] simulator failed to decide confirmation ${requestId}, defaulting to allow: ` +
-              (err instanceof Error ? err.message : String(err)),
-          );
-        }
-        try {
-          await sendingAgent.confirm({ requestId, decision });
-        } catch (err) {
-          console.warn(
-            `[run-once] failed to resolve confirmation ${requestId}: ` +
-              (err instanceof Error ? err.message : String(err)),
-          );
-        }
-      };
-      await sendAndPersistSimulatorMessage({
-        runId: input.runId,
-        agentSend: (message) => sendingAgent.send(message),
-        message: decision.message,
-      });
-      progress({
-        step: "send",
-        status: "done",
-        message: "Simulator message sent",
-        turn: simulatorTurns + 1,
-      });
-      progress({
-        step: "events",
-        status: "start",
-        message: "Waiting for assistant response",
-        turn: simulatorTurns + 1,
-      });
-      const { eventCount, transcriptTurnCount, turnCompleted } =
-        await collectAndPersistEvents({
+          try {
+            await sendingAgent.confirm({ requestId, decision });
+          } catch (err) {
+            console.warn(
+              `[run-once] failed to resolve confirmation ${requestId}: ` +
+                (err instanceof Error ? err.message : String(err)),
+            );
+          }
+        };
+        await sendAndPersistSimulatorMessage({
           runId: input.runId,
-          collector,
-          assistantEvents,
-          includeInTranscript: true,
-          isTurnComplete: (event) => sendingAgent.isTurnComplete(event),
-          maxMs: Math.max(0, runDeadline - Date.now()),
-          onEvent: respondToConfirmation,
+          agentSend: (message) => sendingAgent.send(message),
+          message: decision.message,
         });
-      // A zero-event window means the event stream went silent for the
-      // entire remaining run budget without delivering anything — a
-      // pipeline failure (dead subscription, model never replied). Throw
-      // so the run fails loudly instead of dribbling into metrics with
-      // no assistant response.
-      //
-      // We deliberately do NOT throw on `transcriptTurnCount === 0`
-      // alone: tool-use-only responses (assistant emits a tool_use_*
-      // event sequence with no `assistant_text_delta`) are legitimate
-      // and produce zero transcript turns while still being a real
-      // response.
-      if (eventCount === 0) {
-        throw new Error(
-          `assistant response collection produced no events for turn ${simulatorTurns + 1}`,
-        );
+        progress({
+          step: "send",
+          status: "done",
+          message: "Simulator message sent",
+          turn: simulatorTurns + 1,
+        });
+        progress({
+          step: "events",
+          status: "start",
+          message: "Waiting for assistant response",
+          turn: simulatorTurns + 1,
+        });
+        const { eventCount, transcriptTurnCount, turnCompleted } =
+          await collectAndPersistEvents({
+            runId: input.runId,
+            collector,
+            assistantEvents,
+            includeInTranscript: true,
+            isTurnComplete: (event) => sendingAgent.isTurnComplete(event),
+            maxMs: Math.max(0, runDeadline - Date.now()),
+            onEvent: respondToConfirmation,
+          });
+        // A zero-event window means the event stream went silent for the
+        // entire remaining run budget without delivering anything — a
+        // pipeline failure (dead subscription, model never replied). Throw
+        // so the run fails loudly instead of dribbling into metrics with
+        // no assistant response.
+        //
+        // We deliberately do NOT throw on `transcriptTurnCount === 0`
+        // alone: tool-use-only responses (assistant emits a tool_use_*
+        // event sequence with no `assistant_text_delta`) are legitimate
+        // and produce zero transcript turns while still being a real
+        // response.
+        if (eventCount === 0) {
+          throw new Error(
+            `assistant response collection produced no events for turn ${simulatorTurns + 1}`,
+          );
+        }
+        // Events arrived but the turn never signalled completion — the run
+        // budget elapsed (or the stream died) mid-turn. Grading a truncated
+        // turn would produce misleading scores, so fail loudly instead.
+        if (!turnCompleted) {
+          throw new Error(
+            `assistant turn ${simulatorTurns + 1} did not complete within the run budget (${RUN_MAX_MS / 60_000} min)`,
+          );
+        }
+        progress({
+          step: "events",
+          status: "done",
+          message: "Assistant response collected",
+          detail: `${eventCount} event${eventCount === 1 ? "" : "s"} · ${transcriptTurnCount} transcript turn${transcriptTurnCount === 1 ? "" : "s"}`,
+          turn: simulatorTurns + 1,
+        });
       }
-      // Events arrived but the turn never signalled completion — the run
-      // budget elapsed (or the stream died) mid-turn. Grading a truncated
-      // turn would produce misleading scores, so fail loudly instead.
-      if (!turnCompleted) {
-        throw new Error(
-          `assistant turn ${simulatorTurns + 1} did not complete within the run budget (${RUN_MAX_MS / 60_000} min)`,
-        );
-      }
-      progress({
-        step: "events",
-        status: "done",
-        message: "Assistant response collected",
-        detail: `${eventCount} event${eventCount === 1 ? "" : "s"} · ${transcriptTurnCount} transcript turn${transcriptTurnCount === 1 ? "" : "s"}`,
-        turn: simulatorTurns + 1,
-      });
     }
 
     await mergeRecordedUsage({ runId: input.runId, agent });

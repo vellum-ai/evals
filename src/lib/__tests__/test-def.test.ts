@@ -56,3 +56,63 @@ describe("loadTestDef SPEC.md frontmatter status", () => {
     expect(def.status).toBeUndefined();
   });
 });
+
+describe("loadTestDef multi-phase parsing", () => {
+  test("single-phase tests get no phase2 and empty directives", async () => {
+    const { unitsDir, id } = await makeUnit("# unit-a\n");
+
+    const def = await loadTestDef(id, unitsDir);
+
+    expect(def.phase2SpecPath).toBeUndefined();
+    expect(def.betweenPhaseDirectives).toEqual([]);
+  });
+
+  test("SPEC.phase2.md and between-phases.ts load together", async () => {
+    const { unitsDir, id } = await makeUnit("# unit-a\n");
+    await writeFile(
+      join(unitsDir, id, "SPEC.phase2.md"),
+      "# unit-a phase 2\n",
+      "utf8",
+    );
+    await writeFile(
+      join(unitsDir, id, "between-phases.ts"),
+      'export default [{ type: "trigger-retrospective" }, { type: "new-conversation" }];\n',
+      "utf8",
+    );
+
+    const def = await loadTestDef(id, unitsDir);
+
+    expect(def.phase2SpecPath).toBe(join(unitsDir, id, "SPEC.phase2.md"));
+    expect(def.betweenPhaseDirectives).toEqual([
+      { type: "trigger-retrospective" },
+      { type: "new-conversation" },
+    ]);
+  });
+
+  test("SPEC.phase2.md without directives is allowed", async () => {
+    const { unitsDir, id } = await makeUnit("# unit-a\n");
+    await writeFile(
+      join(unitsDir, id, "SPEC.phase2.md"),
+      "# unit-a phase 2\n",
+      "utf8",
+    );
+
+    const def = await loadTestDef(id, unitsDir);
+
+    expect(def.phase2SpecPath).toBe(join(unitsDir, id, "SPEC.phase2.md"));
+    expect(def.betweenPhaseDirectives).toEqual([]);
+  });
+
+  test("between-phases.ts without SPEC.phase2.md is rejected", async () => {
+    const { unitsDir, id } = await makeUnit("# unit-a\n");
+    await writeFile(
+      join(unitsDir, id, "between-phases.ts"),
+      'export default [{ type: "new-conversation" }];\n',
+      "utf8",
+    );
+
+    await expect(loadTestDef(id, unitsDir)).rejects.toThrow(
+      /between-phases\.ts but no SPEC\.phase2\.md/,
+    );
+  });
+});

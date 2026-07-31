@@ -340,7 +340,9 @@ export class UserSimulator implements Simulator {
   private async decideNextMessage(
     input: SimulatorInput,
   ): Promise<SimulatorDecision> {
-    const spec = await readFile(input.test.specPath, "utf8");
+    const spec = simulatorVisibleSpec(
+      await readFile(input.test.specPath, "utf8"),
+    );
     const body = await this.requestCompletion({
       failureLabel: "request",
       system: [
@@ -383,7 +385,9 @@ export class UserSimulator implements Simulator {
     input: SimulatorInput,
     request: ToolConfirmationRequest,
   ): Promise<SimulatorDecision> {
-    const spec = await readFile(input.test.specPath, "utf8");
+    const spec = simulatorVisibleSpec(
+      await readFile(input.test.specPath, "utf8"),
+    );
     const body = await this.requestCompletion({
       failureLabel: "confirmation request",
       system: [
@@ -459,4 +463,22 @@ export class UserSimulator implements Simulator {
     }
     return (await response.json()) as AnthropicResponseBody;
   }
+}
+
+/**
+ * The portion of a SPEC the simulator is allowed to see.
+ *
+ * A SPEC's `## Fixtures` and `## Success criteria` sections document the
+ * staged environment and the grading answer key (script names, format
+ * rules, expected values) for test AUTHORS and METRICS — handing them to
+ * the simulated user puts the answers one clarifying question away from
+ * the tested agent, guarded only by "never mention" instructions. The
+ * simulator's brief is everything above those sections: role, opening
+ * messages, response policy, and end condition.
+ *
+ * Exported for unit tests.
+ */
+export function simulatorVisibleSpec(spec: string): string {
+  const cut = spec.search(/^## (?:Fixtures|Success criteria)\b/m);
+  return cut === -1 ? spec : spec.slice(0, cut).trimEnd() + "\n";
 }

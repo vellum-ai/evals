@@ -5,6 +5,9 @@ export type EvalProgressStep =
   | "events"
   | "simulator"
   | "send"
+  // Multi-phase tests only: executing a between-phase directive
+  // (trigger-retrospective, new-conversation) between conversations.
+  | "phase"
   | "metrics"
   | "shutdown"
   // Emitted once per run after metrics finish. Carries the per-metric score

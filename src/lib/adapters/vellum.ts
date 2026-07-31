@@ -716,6 +716,173 @@ export class VellumAgent implements BaseAgent {
     this.eventsProcess = undefined;
   }
 
+  /**
+   * Force the memory retrospective for the current conversation and wait
+   * for it to finish.
+   *
+   * `assistant memory retrospective run <conversationId>` runs the fork
+   * retrospective in-process inside the container (no daemon IPC) and
+   * returns when it completes, so no separate completion poll is needed.
+   * The CLI needs the conversation *id*, but this adapter only tracks the
+   * conversation *key* (`vellum message` auto-creates the row for a key),
+   * so the id is resolved first from the daemon DB's `conversation_keys`
+   * table via the container's `bun:sqlite`.
+   *
+   * The only guard the CLI does not bypass is "source conversation is
+   * mid-turn" — it requeues with a `source_processing` outcome instead of
+   * running. The retry loop below absorbs that window: by the time the
+   * runner executes phase directives the last turn has completed, so one
+   * or two retries cover the daemon marking the conversation idle.
+   */
+  async triggerRetrospective(): Promise<void> {
+    this.assertHatched();
+    const resolveScript =
+      `const {Database} = require("bun:sqlite");` +
+      `const db = new Database("${CONTAINER_WORKSPACE_DIR}/data/db/assistant.db", {readonly: true});` +
+      `const row = db.query("SELECT conversation_id FROM conversation_keys WHERE conversation_key = ?")` +
+      `.get(${JSON.stringify(this.conversationKey)});` +
+      `if (!row) { console.error("no conversation row for key"); process.exit(3); }` +
+      `console.log(row.conversation_id);`;
+    const resolve = await this.runner.run(this.cliCommand, [
+      "exec",
+      this.id,
+      "--",
+      "bun",
+      "-e",
+      resolveScript,
+    ]);
+    assertSuccess(
+      resolve,
+      `resolve conversation id for key ${this.conversationKey} in ${this.id}`,
+    );
+    const conversationId = resolve.stdout.trim().split("\n").pop()?.trim();
+    if (!conversationId) {
+      throw new Error(
+        `conversation-id resolution for ${this.conversationKey} printed nothing (stdout: ${resolve.stdout})`,
+      );
+    }
+
+    const maxAttempts = 5;
+    let lastOutput = "";
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const result = await this.runner.run(
+        this.cliCommand,
+        [
+          "exec",
+          this.id,
+          "--",
+          "assistant",
+          "memory",
+          "retrospective",
+          "run",
+          conversationId,
+          "--json",
+        ],
+        {
+          logPath:
+            runArtifacts(this.id).runDir + "/subprocess-retrospective.log",
+          logStep: `retrospective-attempt-${attempt}`,
+        },
+      );
+      lastOutput = `${result.stdout}\n${result.stderr}`;
+      const midTurn = /source_processing/.test(lastOutput);
+      if (result.exitCode === 0 && !midTurn) {
+        await this.captureRetrospectiveDiagnostics();
+        // The CLI exits 0 for every outcome; only `invoked` means the
+        // review pass actually ran. `disabled` / `no_new_messages` here
+        // mean the eval environment is broken (memory off, empty
+        // conversation) — fail loudly instead of letting downstream
+        // capture metrics report an indistinguishable zero.
+        const kindMatch = lastOutput.match(/"kind"\s*:\s*"([a-z_]+)"/);
+        const kind = kindMatch?.[1];
+        if (kind !== undefined && kind !== "invoked") {
+          throw new Error(
+            `memory retrospective for ${conversationId} reported outcome "${kind}" — expected "invoked"`,
+          );
+        }
+        return;
+      }
+      if (attempt < maxAttempts) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 3000));
+      }
+    }
+    await this.captureRetrospectiveDiagnostics();
+    throw new Error(
+      `memory retrospective for ${conversationId} did not complete after ${maxAttempts} attempts: ${lastOutput.slice(0, 400)}`,
+    );
+  }
+
+  /**
+   * Best-effort post-retrospective diagnostics into the run artifacts:
+   * the retrospective state rows and the workspace memory config. The
+   * config capture answers the load-bearing gate question — skill
+   * authoring only happens when `memory.v3.live` is true (fresh
+   * workspaces get it via migration 105) — so a silent no-op
+   * retrospective can be attributed to config vs. model behavior from
+   * the artifacts alone, after the container is gone.
+   */
+  private async captureRetrospectiveDiagnostics(): Promise<void> {
+    const logPath =
+      runArtifacts(this.id).runDir + "/subprocess-retrospective-diag.log";
+    await this.runner
+      .run(
+        this.cliCommand,
+        [
+          "exec",
+          this.id,
+          "--",
+          "assistant",
+          "memory",
+          "retrospective",
+          "list",
+          "--json",
+        ],
+        { logPath, logStep: "retrospective-state" },
+      )
+      .catch(() => undefined);
+    await this.runner
+      .run(
+        this.cliCommand,
+        [
+          "exec",
+          this.id,
+          "--",
+          "bun",
+          "-e",
+          // The whole config is large; the load-bearing bit is the v3
+          // gate, so extract it precisely instead of head-truncating.
+          `const cfg = JSON.parse(require("fs").readFileSync("${CONTAINER_WORKSPACE_DIR}/config.json", "utf8"));` +
+            `console.log(JSON.stringify({ memoryEnabled: cfg.memory?.enabled, v3: cfg.memory?.v3 ?? null, retrospective: cfg.memory?.retrospective ?? null }));`,
+        ],
+        { logPath, logStep: "workspace-config" },
+      )
+      .catch(() => undefined);
+    // The workspace-migrations checkpoint records which migrations ran and
+    // whether the first boot considered this workspace brand-new — the
+    // determinant of whether migration 105 (memory.v3.live=true for new
+    // workspaces) applied.
+    await this.runner
+      .run(
+        this.cliCommand,
+        [
+          "exec",
+          this.id,
+          "--",
+          "bun",
+          "-e",
+          // The checkpoint lists every applied migration (~300 entries);
+          // extract just the new-workspace verdict and migration 105's
+          // status instead of dumping (and truncating) the whole map.
+          `const cp = JSON.parse(require("fs").readFileSync("${CONTAINER_WORKSPACE_DIR}/data/.workspace-migrations.json", "utf8"));` +
+            `const key = Object.keys(cp.applied ?? {}).find((k) => k.startsWith("105-"));` +
+            `const rows = Object.entries(cp.applied ?? {}).map(([id, e]) => ({ id, at: e.appliedAt ?? e.startedAt ?? "" })).sort((a, b) => a.at.localeCompare(b.at));` +
+            `console.log(JSON.stringify({ isNewWorkspace: cp.isNewWorkspace ?? null, migration105: key ? { id: key, ...cp.applied[key] } : null, appliedCount: rows.length, earliest: rows.slice(0, 3), latest: rows.slice(-3) }));`,
+        ],
+        { logPath, logStep: "migrations-checkpoint" },
+      )
+      .catch(() => undefined);
+  }
+
   events(): AsyncIterable<AgentEvent> {
     this.assertHatched();
     this.eventsProcess ??= this.runner.spawn(this.cliCommand, [

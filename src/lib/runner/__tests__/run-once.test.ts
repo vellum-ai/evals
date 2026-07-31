@@ -494,6 +494,7 @@ function fakeTestDef(id: string): TestDef {
     specPath: `/tmp/${id}/SPEC.md`,
     setupPath: `/tmp/${id}/setup.ts`,
     setupCommands: [],
+    betweenPhaseDirectives: [],
     metricsDir: `/tmp/${id}/metrics`,
     metricPaths: [],
   };

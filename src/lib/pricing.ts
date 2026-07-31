@@ -26,11 +26,12 @@
  * multipliers (read = 0.1x, 5-minute write = 1.25x, 1-hour write = 2x);
  * the two write tiers are attributed from the `cache_creation` breakdown
  * the egress recorder forwards. OpenAI-compatible providers (OpenAI,
- * Fireworks) instead fold the cached subset *into* `prompt_tokens`, so
- * the pricer splits that subset back out and charges it at the row's
- * `cacheReadPer1M` when the catalog publishes a discounted cache tier
- * (e.g. Fireworks MiniMax-M3 at $0.06/1M), falling back to the base input
- * rate otherwise. This remains a "good-enough for ranking profiles"
+ * Fireworks) instead fold both the cached and the cache-written subsets
+ * *into* the inclusive input count, so the pricer splits them back out and
+ * charges them at the row's `cacheReadPer1M` / `cacheWritePer1M` when the
+ * catalog publishes those tiers (e.g. Fireworks MiniMax-M3 reads at
+ * $0.06/1M, GPT-5.6 Luna writes at $1.25/1M), falling back to the base
+ * input rate otherwise. This remains a "good-enough for ranking profiles"
  * estimate (e.g. Anthropic fast-mode's 6x multiplier isn't modeled), not
  * a billing source of truth.
  */
@@ -65,6 +66,20 @@ interface ModelRow {
    * `assistant/src/providers/model-catalog.ts`.
    */
   cacheReadPer1M?: number;
+  /**
+   * USD per 1,000,000 cache-written input tokens, when the provider bills
+   * writes at a rate distinct from base input (OpenAI GPT-5.6+ bills them
+   * at 1.25x input and reports them as
+   * `input_tokens_details.cache_write_tokens`). Omitted for rows whose
+   * provider folds writes into the base input rate, in which case written
+   * tokens price at `inputPer1M`. Mirrors `cacheWritePer1mTokens` on the
+   * assistant catalog rows in
+   * `assistant/src/providers/model-catalog.ts`.
+   *
+   * Anthropic rows never set this: Anthropic prices writes as TTL-tiered
+   * multipliers on base input, handled by ANTHROPIC_CACHE_MULTIPLIERS.
+   */
+  cacheWritePer1M?: number;
 }
 
 /**
@@ -106,6 +121,28 @@ const PRICING_TABLE: Record<string, ModelRow> = {
   // OpenAI's long-context tier multiplier yet. The catalog is the
   // source of truth; drift is acceptable until a programmatic sync
   // exists.
+  // The GPT-5.6 family (Sol / Terra / Luna) bills prompt caching
+  // explicitly: reads at 0.1x input, writes at 1.25x input, reported as
+  // `input_tokens_details.{cached_tokens,cache_write_tokens}` and both
+  // counted inside the inclusive `input_tokens`.
+  "openai:gpt-5.6-sol": {
+    inputPer1M: 5.0,
+    outputPer1M: 30.0,
+    cacheReadPer1M: 0.5,
+    cacheWritePer1M: 6.25,
+  },
+  "openai:gpt-5.6-terra": {
+    inputPer1M: 2.5,
+    outputPer1M: 15.0,
+    cacheReadPer1M: 0.25,
+    cacheWritePer1M: 3.125,
+  },
+  "openai:gpt-5.6-luna": {
+    inputPer1M: 1.0,
+    outputPer1M: 6.0,
+    cacheReadPer1M: 0.1,
+    cacheWritePer1M: 1.25,
+  },
   "openai:gpt-5.5-pro": { inputPer1M: 30.0, outputPer1M: 180.0 },
   "openai:gpt-5.5": { inputPer1M: 5.0, outputPer1M: 30.0 },
   "openai:gpt-5.4": { inputPer1M: 2.5, outputPer1M: 15.0 },
@@ -134,6 +171,14 @@ const PRICING_TABLE: Record<string, ModelRow> = {
     inputPer1M: 0.3,
     outputPer1M: 1.2,
     cacheReadPer1M: 0.06,
+  },
+  // GLM 5.2 is what the `vellum-balanced-glm52` profile pins. Fireworks
+  // publishes a discounted cache-read tier and no separate write tier, so
+  // written tokens fall back to the base input rate.
+  "fireworks:glm-5p2": {
+    inputPer1M: 1.4,
+    outputPer1M: 4.4,
+    cacheReadPer1M: 0.26,
   },
 };
 
@@ -362,20 +407,31 @@ export function priceUsageRecord(
     return { costUsd: cost };
   }
 
-  // OpenAI-compatible providers (OpenAI, Fireworks) fold the cached subset
-  // *into* `input_tokens`. Split it back out and price it at the catalog's
-  // dedicated cache-read rate when the row publishes one, else at the base
-  // input rate. Mirrors the non-Anthropic branch of the daemon's
-  // `calculateUsageCost` (`assistant/src/util/pricing.ts`), where
-  // `directInputTokens` is the uncached remainder and `cacheReadInputTokens`
-  // bills at `cacheReadPer1M ?? inputPer1M`. For rows without a cache-read
-  // rate this collapses to `input_tokens * inputPer1M`, leaving the
-  // cache-less OpenAI rows unchanged.
-  const uncachedInputTokens = Math.max(inputTok - cacheReadTokens, 0);
+  // OpenAI-compatible providers (OpenAI, Fireworks) fold both the cached
+  // and the cache-written subsets *into* `input_tokens`. Split them back
+  // out and price each at the catalog's dedicated tier when the row
+  // publishes one, else at the base input rate. Mirrors the non-Anthropic
+  // branch of the daemon's `calculateUsageCost`
+  // (`assistant/src/util/pricing.ts`), where `directInputTokens` is
+  // `input_tokens` minus both subsets, cache reads bill at
+  // `cacheReadPer1M ?? inputPer1M`, and cache writes at
+  // `cacheWritePer1M ?? inputPer1M`. For rows publishing neither tier this
+  // collapses to `input_tokens * inputPer1M`, leaving the cache-less
+  // OpenAI rows unchanged.
+  const cacheWriteTokens =
+    readNumber(
+      record.cache_creation_input_tokens ?? record.cacheCreationInputTokens,
+    ) ?? 0;
+  const uncachedInputTokens = Math.max(
+    inputTok - cacheReadTokens - cacheWriteTokens,
+    0,
+  );
   const cacheReadRate = pricing.cacheReadPer1M ?? pricing.inputPer1M;
+  const cacheWriteRate = pricing.cacheWritePer1M ?? pricing.inputPer1M;
   const cost =
     (uncachedInputTokens / 1_000_000) * pricing.inputPer1M +
     (cacheReadTokens / 1_000_000) * cacheReadRate +
+    (cacheWriteTokens / 1_000_000) * cacheWriteRate +
     outputCost;
 
   return { costUsd: cost };

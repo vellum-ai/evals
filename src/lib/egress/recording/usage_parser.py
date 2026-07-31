@@ -10,8 +10,8 @@ Keeping the parsing logic in a stand-alone module without mitmproxy
 imports means the tests can exercise it directly with realistic JSON
 fixtures, no docker / no network. mitmproxy is only the transport.
 
-Two wire formats are parsed, each with a streaming and a non-streaming
-shape:
+Three wire formats are parsed, each with a streaming and a
+non-streaming shape:
 
 **Anthropic `/v1/messages`** (`parse_anthropic_messages_response`):
 
@@ -48,7 +48,27 @@ https://platform.openai.com/docs/api-reference/chat):
    emits a terminal chunk with a populated top-level `usage` object and
    an empty `choices` array just before the `data: [DONE]` sentinel.
 
-Both entry points return a normalized dict shaped like the evals
+**OpenAI Responses API `/v1/responses`**
+(`parse_openai_responses_response`) is the wire format the assistant's
+`openai` provider speaks against `api.openai.com` (see
+`assistant/src/providers/openai/responses-provider.ts`). Its usage object
+is `input_tokens` / `output_tokens` with the cached and cache-written
+subsets nested under `input_tokens_details.cached_tokens` and
+`input_tokens_details.cache_write_tokens`, both counted *inside*
+`input_tokens`:
+
+1. **Non-streaming**: a single JSON document with a top-level `usage`
+   object.
+
+2. **Streaming**: a `text/event-stream` body whose terminal
+   `response.completed` (or `response.incomplete`) event carries the
+   final `response.usage`.
+
+`parse_openai_usage_response` dispatches between the chat-completions and
+Responses shapes on the request path, so the addon has one entry point
+per OpenAI-compatible host regardless of which API that host serves.
+
+All entry points return a normalized dict shaped like the evals
 harness's existing `event.message.usage` records (`provider`, `model`,
 top-level `input_tokens` / `output_tokens`, plus the raw `usage` object)
 — so downstream `summarizeAssistantUsage` and the pricing table can
@@ -272,6 +292,12 @@ def _usage_record_from_openai_usage(
     non-Anthropic `calculateUsageCost` branch, so this does not double-bill
     (see `src/lib/pricing.ts`).
 
+    The cache-*written* subset lives alongside it as
+    `prompt_tokens_details.cache_write_tokens` on providers that bill
+    writes separately (GPT-5.6+ explicit prompt-cache mode) and is hoisted
+    to `cache_creation_input_tokens` under the same inclusive-count
+    convention.
+
     `provider` is supplied by the caller (`"openai"` or `"fireworks"`)
     because the wire format is identical across both — only the host the
     addon observed disambiguates them.
@@ -287,10 +313,24 @@ def _usage_record_from_openai_usage(
         record["output_tokens"] = output_tokens
     prompt_details = usage.get("prompt_tokens_details")
     if isinstance(prompt_details, dict):
-        cached_tokens = _coerce_int(prompt_details.get("cached_tokens"))
-        if cached_tokens is not None:
-            record["cache_read_input_tokens"] = cached_tokens
+        _hoist_openai_cache_details(record, prompt_details)
     return record
+
+
+def _hoist_openai_cache_details(record: dict, details: dict) -> None:
+    """Lift an OpenAI token-details object's cache counters to top level.
+
+    Shared by the chat-completions (`prompt_tokens_details`) and Responses
+    (`input_tokens_details`) shapes, which name the same two counters
+    identically. Both are counted *inside* the inclusive input count, so the
+    pricer splits them back out before charging.
+    """
+    cached_tokens = _coerce_int(details.get("cached_tokens"))
+    if cached_tokens is not None:
+        record["cache_read_input_tokens"] = cached_tokens
+    cache_write_tokens = _coerce_int(details.get("cache_write_tokens"))
+    if cache_write_tokens is not None:
+        record["cache_creation_input_tokens"] = cache_write_tokens
 
 
 def _parse_openai_non_streaming(
@@ -386,3 +426,151 @@ def parse_openai_chat_completions_response(
     if isinstance(req, dict) and req.get("stream") is True:
         return _parse_openai_streaming(provider, response_body)
     return _parse_openai_non_streaming(provider, response_body)
+
+
+def _usage_record_from_responses_usage(
+    provider: str,
+    model: Optional[str],
+    usage: dict,
+) -> dict:
+    """Project a Responses API `usage` object onto the evals record shape.
+
+    `input_tokens` is the inclusive prompt count; the cached and
+    cache-written subsets are nested under `input_tokens_details` and are
+    hoisted to `cache_read_input_tokens` / `cache_creation_input_tokens`,
+    matching the chat-completions projection so downstream consumers see
+    one shape per provider family.
+    """
+    record: dict = {"provider": provider, "usage": usage}
+    if model:
+        record["model"] = model
+    input_tokens = _coerce_int(usage.get("input_tokens"))
+    output_tokens = _coerce_int(usage.get("output_tokens"))
+    if input_tokens is not None:
+        record["input_tokens"] = input_tokens
+    if output_tokens is not None:
+        record["output_tokens"] = output_tokens
+    input_details = usage.get("input_tokens_details")
+    if isinstance(input_details, dict):
+        _hoist_openai_cache_details(record, input_details)
+    return record
+
+
+def _parse_responses_non_streaming(
+    provider: str, response_body: bytes
+) -> Optional[dict]:
+    """Parse a non-streaming /v1/responses body."""
+    try:
+        payload = json.loads(response_body)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    model = payload.get("model")
+    if not isinstance(model, str):
+        model = None
+    return _usage_record_from_responses_usage(provider, model, usage)
+
+
+def _parse_responses_streaming(
+    provider: str, response_body: bytes
+) -> Optional[dict]:
+    """Pull usage + model out of a Responses API SSE stream.
+
+    The stream carries one JSON envelope per `data:` line, each with a
+    `type` (`response.created`, `response.output_text.delta`, …). Only the
+    terminal `response.completed` / `response.incomplete` envelopes carry a
+    populated `response.usage`; earlier envelopes either omit it or carry
+    `null`. The last envelope with a usage object wins so a truncated
+    stream still yields whatever the server did report.
+    """
+    events = _parse_sse_events(response_body)
+    if not events:
+        return None
+
+    model: Optional[str] = None
+    usage: Optional[dict] = None
+    for event in events:
+        response = event.get("response")
+        if not isinstance(response, dict):
+            continue
+        if isinstance(response.get("model"), str):
+            model = response["model"]
+        candidate = response.get("usage")
+        if isinstance(candidate, dict) and candidate:
+            usage = candidate
+
+    if usage is None:
+        return None
+    return _usage_record_from_responses_usage(provider, model, usage)
+
+
+def parse_openai_responses_response(
+    provider: str,
+    request_path: str,
+    request_body: bytes,
+    response_content_type: str,
+    response_body: bytes,
+) -> Optional[dict]:
+    """Top-level entry point for the OpenAI Responses API.
+
+    Returns `None` when the response carries no usage record, either
+    because it isn't a `/v1/responses` response or the body is malformed.
+    `None` tells the addon to skip writing an NDJSON line.
+    """
+    # Match on the path component only so a query string can't defeat the
+    # suffix check. Sub-resources like `/v1/responses/<id>/input_items`
+    # carry no usage and don't end in `/responses`.
+    path_only = urlsplit(request_path).path
+    if not path_only.endswith("/responses"):
+        return None
+    if "text/event-stream" in response_content_type.lower():
+        return _parse_responses_streaming(provider, response_body)
+    if "application/json" in response_content_type.lower():
+        return _parse_responses_non_streaming(provider, response_body)
+    # Some intermediate proxies omit the content-type; fall back to
+    # inspecting the request body's `stream` flag.
+    try:
+        req = json.loads(request_body) if request_body else {}
+    except (json.JSONDecodeError, ValueError):
+        req = {}
+    if isinstance(req, dict) and req.get("stream") is True:
+        return _parse_responses_streaming(provider, response_body)
+    return _parse_responses_non_streaming(provider, response_body)
+
+
+def parse_openai_usage_response(
+    provider: str,
+    request_path: str,
+    request_body: bytes,
+    response_content_type: str,
+    response_body: bytes,
+) -> Optional[dict]:
+    """Dispatch an OpenAI-family response to the parser its path implies.
+
+    One host can serve both APIs (`api.openai.com` exposes
+    `/v1/chat/completions` and `/v1/responses`), and the assistant's
+    `openai` provider uses the Responses API while Fireworks and OpenRouter
+    use chat-completions. Keying on the path rather than the host keeps the
+    addon a one-line dispatch and lets a host move between APIs without a
+    recorder change.
+    """
+    path_only = urlsplit(request_path).path
+    if path_only.endswith("/responses"):
+        return parse_openai_responses_response(
+            provider=provider,
+            request_path=request_path,
+            request_body=request_body,
+            response_content_type=response_content_type,
+            response_body=response_body,
+        )
+    return parse_openai_chat_completions_response(
+        provider=provider,
+        request_path=request_path,
+        request_body=request_body,
+        response_content_type=response_content_type,
+        response_body=response_body,
+    )

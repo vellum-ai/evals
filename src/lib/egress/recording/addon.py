@@ -5,9 +5,10 @@ mitmproxy addon. Two responsibilities:
      usage parsers (`usage_parser.parse_*`) and appends each parsed
      usage record as one NDJSON line to `RECORDING_OUTPUT_PATH`
      (default `/recording/egress-usage.ndjson`). Anthropic
-     `/v1/messages` and Fireworks `/chat/completions` traffic are
-     parsed; every record carries a `provider` field so the report can
-     key pricing on `<provider>:<model>`.
+     `/v1/messages`, OpenAI `/v1/responses`, and the shared
+     `/chat/completions` shape are parsed; every record carries a
+     `provider` field so the report can key pricing on
+     `<provider>:<model>`.
   2. **Mocking.** Wires the `request` hook into the pure-function
      mock-github handler (`mock_github_handler.handle`). When the
      handler returns a synthesized response, the addon short-circuits
@@ -20,6 +21,8 @@ mitmproxy addon. Two responsibilities:
 
 Hosts intercepted for response parsing:
   - `api.anthropic.com` — Anthropic `/v1/messages`
+  - `api.openai.com`: OpenAI `/v1/responses` (the Responses API the
+    assistant's `openai` provider speaks) and `/v1/chat/completions`
   - `api.fireworks.ai` — Fireworks `/inference/v1/chat/completions`
     (open-weight models, e.g. the `vellum-minimax` profile's MiniMax-M3)
 
@@ -30,11 +33,9 @@ set):
 
 Other allowlisted model hosts flow through mitmproxy and out the egress
 jail untouched — the addon only parses hosts whose wire format it
-understands. OpenAI (`api.openai.com`, served via the Responses API at
-`/v1/responses`) and Gemini (`generativelanguage.googleapis.com`) use
-distinct API shapes the chat-completions parser cannot read, so they are
-not intercepted and their runs score $0 on the cost metric until a
-parser for each is added.
+understands. Gemini (`generativelanguage.googleapis.com`) uses a distinct
+API shape no parser here reads, so it is not intercepted and its runs
+score $0 on the cost metric until a parser is added.
 
 Design notes:
 - SSE model responses are streamed through to the assistant in
@@ -94,16 +95,15 @@ MAX_PAYLOAD_CHARS = int(os.environ.get("RECORDING_MAX_PAYLOAD_CHARS", "32768"))
 # requests fall through to the iptables DROP-default policy.
 PLUGIN_FIXTURES_DIR: Optional[str] = os.environ.get("PLUGIN_FIXTURES_DIR")
 
-# Hosts whose responses speak the OpenAI chat-completions wire format,
-# mapped to the provider label stamped onto each usage record. The label
-# keys pricing (`<provider>:<model>` in `src/lib/pricing.ts`).
+# Hosts whose responses speak an OpenAI wire format, mapped to the
+# provider label stamped onto each usage record. The label keys pricing
+# (`<provider>:<model>` in `src/lib/pricing.ts`).
 #
-# OpenAI's own `api.openai.com` is intentionally excluded: the assistant's
-# `openai` provider is the Responses API (`/v1/responses`, see
-# adapter-factory.ts), whose payloads this `/chat/completions` parser does
-# not read — intercepting it would MITM the traffic yet record nothing.
-# Fireworks serves open-weight models over `/chat/completions`, which the
-# parser handles.
+# `usage_parser.parse_openai_usage_response` dispatches per request path,
+# so a host may serve either API: `api.openai.com` answers the assistant's
+# `openai` provider on `/v1/responses` (see adapter-factory.ts) and plain
+# `/v1/chat/completions` for anything still on that endpoint, while
+# Fireworks serves open-weight models over `/chat/completions` only.
 #
 # OpenRouter aggregates many upstream models behind the same
 # `/api/v1/chat/completions` wire format and returns usage in the OpenAI
@@ -111,6 +111,7 @@ PLUGIN_FIXTURES_DIR: Optional[str] = os.environ.get("PLUGIN_FIXTURES_DIR")
 # pricing in `src/lib/pricing.ts`, which strips the `<upstream>/` model
 # prefix and bills at the underlying provider's rate.
 OPENAI_COMPATIBLE_HOSTS = {
+    "api.openai.com": "openai",
     "api.fireworks.ai": "fireworks",
     "openrouter.ai": "openrouter",
 }
@@ -358,7 +359,7 @@ def response(flow) -> None:  # type: ignore[no-untyped-def]
                 )
             )
         else:
-            record = usage_parser.parse_openai_chat_completions_response(
+            record = usage_parser.parse_openai_usage_response(
                 provider=OPENAI_COMPATIBLE_HOSTS[host],
                 request_path=request.path,
                 request_body=request_body,

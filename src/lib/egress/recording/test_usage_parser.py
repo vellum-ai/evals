@@ -17,6 +17,8 @@ import unittest
 from usage_parser import (
     parse_anthropic_messages_response,
     parse_openai_chat_completions_response,
+    parse_openai_responses_response,
+    parse_openai_usage_response,
     _parse_anthropic_non_streaming,
     _parse_anthropic_streaming,
     _parse_openai_non_streaming,
@@ -695,6 +697,203 @@ class TopLevelDispatchTests(unittest.TestCase):
                 response_body=b'{"input_tokens":42}',
             )
         )
+
+
+RESPONSES_REQUEST_BODY = json.dumps(
+    {
+        "model": "gpt-5.6-luna",
+        "prompt_cache_key": "conv-xyz",
+        "prompt_cache_options": {"mode": "explicit"},
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "stream": True,
+    }
+).encode("utf-8")
+
+
+def _responses_non_streaming_body() -> bytes:
+    return json.dumps(
+        {
+            "id": "resp_01",
+            "object": "response",
+            "model": "gpt-5.6-luna",
+            "status": "completed",
+            "usage": {
+                "input_tokens": 9140,
+                "output_tokens": 220,
+                "output_tokens_details": {"reasoning_tokens": 64},
+                "input_tokens_details": {
+                    "cached_tokens": 9000,
+                    "cache_write_tokens": 100,
+                },
+            },
+        }
+    ).encode("utf-8")
+
+
+def _responses_streaming_body() -> bytes:
+    lines = [
+        'data: {"type":"response.created","response":'
+        '{"id":"resp_01","model":"gpt-5.6-luna","usage":null}}',
+        "",
+        'data: {"type":"response.output_text.delta","delta":"hi"}',
+        "",
+        'data: {"type":"response.completed","response":'
+        '{"id":"resp_01","model":"gpt-5.6-luna","status":"completed",'
+        '"usage":{"input_tokens":9140,"output_tokens":220,'
+        '"input_tokens_details":{"cached_tokens":9000,'
+        '"cache_write_tokens":100}}}}',
+        "",
+    ]
+    return "\n".join(lines).encode("utf-8")
+
+
+class ParseOpenAiResponsesTest(unittest.TestCase):
+    def test_parses_non_streaming_usage(self) -> None:
+        record = parse_openai_responses_response(
+            provider="openai",
+            request_path="/v1/responses",
+            request_body=b"{}",
+            response_content_type="application/json",
+            response_body=_responses_non_streaming_body(),
+        )
+        assert record is not None
+        self.assertEqual(record["provider"], "openai")
+        self.assertEqual(record["model"], "gpt-5.6-luna")
+        self.assertEqual(record["input_tokens"], 9140)
+        self.assertEqual(record["output_tokens"], 220)
+        # Both cache subsets are hoisted to the flat evals record shape.
+        self.assertEqual(record["cache_read_input_tokens"], 9000)
+        self.assertEqual(record["cache_creation_input_tokens"], 100)
+
+    def test_parses_streaming_usage_from_the_terminal_event(self) -> None:
+        record = parse_openai_responses_response(
+            provider="openai",
+            request_path="/v1/responses",
+            request_body=RESPONSES_REQUEST_BODY,
+            response_content_type="text/event-stream; charset=utf-8",
+            response_body=_responses_streaming_body(),
+        )
+        assert record is not None
+        self.assertEqual(record["input_tokens"], 9140)
+        self.assertEqual(record["cache_read_input_tokens"], 9000)
+        self.assertEqual(record["cache_creation_input_tokens"], 100)
+
+    def test_null_usage_on_earlier_events_does_not_shadow_the_total(
+        self,
+    ) -> None:
+        # `response.created` carries `usage: null`; only the terminal event
+        # has real numbers, and the parser must not stop at the first one.
+        record = parse_openai_responses_response(
+            provider="openai",
+            request_path="/v1/responses",
+            request_body=RESPONSES_REQUEST_BODY,
+            response_content_type="",
+            response_body=_responses_streaming_body(),
+        )
+        assert record is not None
+        self.assertEqual(record["output_tokens"], 220)
+
+    def test_skips_non_responses_paths(self) -> None:
+        self.assertIsNone(
+            parse_openai_responses_response(
+                provider="openai",
+                request_path="/v1/models",
+                request_body=b"",
+                response_content_type="application/json",
+                response_body=b'{"data":[]}',
+            )
+        )
+
+    def test_omits_cache_fields_when_the_server_reports_none(self) -> None:
+        body = json.dumps(
+            {
+                "model": "gpt-5.6-luna",
+                "usage": {"input_tokens": 100, "output_tokens": 10},
+            }
+        ).encode("utf-8")
+        record = parse_openai_responses_response(
+            provider="openai",
+            request_path="/v1/responses",
+            request_body=b"{}",
+            response_content_type="application/json",
+            response_body=body,
+        )
+        assert record is not None
+        self.assertNotIn("cache_read_input_tokens", record)
+        self.assertNotIn("cache_creation_input_tokens", record)
+
+
+class ParseOpenAiUsageDispatchTest(unittest.TestCase):
+    def test_routes_responses_paths_to_the_responses_parser(self) -> None:
+        record = parse_openai_usage_response(
+            provider="openai",
+            request_path="/v1/responses",
+            request_body=b"{}",
+            response_content_type="application/json",
+            response_body=_responses_non_streaming_body(),
+        )
+        assert record is not None
+        self.assertEqual(record["input_tokens"], 9140)
+
+    def test_routes_chat_completions_paths_to_the_chat_parser(self) -> None:
+        body = json.dumps(
+            {
+                "model": "accounts/fireworks/models/glm-5p2",
+                "usage": {
+                    "prompt_tokens": 500,
+                    "completion_tokens": 20,
+                    "prompt_tokens_details": {"cached_tokens": 400},
+                },
+            }
+        ).encode("utf-8")
+        record = parse_openai_usage_response(
+            provider="fireworks",
+            request_path="/inference/v1/chat/completions",
+            request_body=b"{}",
+            response_content_type="application/json",
+            response_body=body,
+        )
+        assert record is not None
+        self.assertEqual(record["input_tokens"], 500)
+        self.assertEqual(record["cache_read_input_tokens"], 400)
+
+    def test_returns_none_for_paths_neither_parser_claims(self) -> None:
+        self.assertIsNone(
+            parse_openai_usage_response(
+                provider="openai",
+                request_path="/v1/embeddings",
+                request_body=b"",
+                response_content_type="application/json",
+                response_body=b'{"data":[]}',
+            )
+        )
+
+
+class ChatCompletionsCacheWriteTest(unittest.TestCase):
+    def test_hoists_cache_write_tokens_when_present(self) -> None:
+        body = json.dumps(
+            {
+                "model": "gpt-5.6-luna",
+                "usage": {
+                    "prompt_tokens": 9140,
+                    "completion_tokens": 220,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 9000,
+                        "cache_write_tokens": 100,
+                    },
+                },
+            }
+        ).encode("utf-8")
+        record = parse_openai_chat_completions_response(
+            provider="openai",
+            request_path="/v1/chat/completions",
+            request_body=b"{}",
+            response_content_type="application/json",
+            response_body=body,
+        )
+        assert record is not None
+        self.assertEqual(record["cache_read_input_tokens"], 9000)
+        self.assertEqual(record["cache_creation_input_tokens"], 100)
 
 
 if __name__ == "__main__":

@@ -455,4 +455,71 @@ describe("priceUsageRecord", () => {
     expect(result.costUsd).toBeCloseTo(0.000108, 6);
     expect(result.diagnostic).toBeUndefined();
   });
+
+  test("prices a Fireworks GLM 5.2 record at its catalog rate", () => {
+    /**
+     * The `vellum-balanced-glm52` profile pins
+     * `accounts/fireworks/models/glm-5p2`. Without a row it would score $0
+     * with only an `unpriced_model` diagnostic to explain it.
+     */
+    // GIVEN a GLM 5.2 record with a cached subset folded into the input count
+    const record = {
+      provider: "fireworks",
+      model: "accounts/fireworks/models/glm-5p2",
+      input_tokens: 1_000,
+      output_tokens: 1_000,
+      cache_read_input_tokens: 800,
+    };
+
+    // WHEN it is priced
+    const result = priceUsageRecord(record);
+
+    // THEN 200 * 1.4/1M + 800 * 0.26/1M + 1000 * 4.4/1M = 0.004888
+    expect(result.costUsd).toBeCloseTo(0.004888, 8);
+    expect(result.diagnostic).toBeUndefined();
+  });
+
+  test("prices GPT-5.6 cache writes at the catalog's dedicated write rate", () => {
+    /**
+     * GPT-5.6 bills prompt caching explicitly: reads at 0.1x input, writes
+     * at 1.25x input, both reported inside the inclusive `input_tokens`.
+     * Charging writes at the base input rate would understate an agentic
+     * turn, and leaving them inside `input_tokens` would double-bill them.
+     */
+    // GIVEN a Luna record whose input count contains both cache subsets
+    const record = {
+      provider: "openai",
+      model: "gpt-5.6-luna",
+      input_tokens: 1_000_000,
+      output_tokens: 0,
+      cache_read_input_tokens: 600_000,
+      cache_creation_input_tokens: 300_000,
+    };
+
+    // WHEN it is priced
+    const result = priceUsageRecord(record);
+
+    // THEN 100k direct at $1/1M + 600k reads at $0.10/1M + 300k writes at
+    // $1.25/1M = 0.1 + 0.06 + 0.375 = 0.535
+    expect(result.costUsd).toBeCloseTo(0.535, 6);
+    expect(result.diagnostic).toBeUndefined();
+  });
+
+  test("prices a cold GPT-5.6 request that wrote its whole prefix", () => {
+    // GIVEN the first request of a conversation: everything is a write
+    const record = {
+      provider: "openai",
+      model: "gpt-5.6-terra",
+      input_tokens: 1_000_000,
+      output_tokens: 0,
+      cache_creation_input_tokens: 1_000_000,
+    };
+
+    // WHEN it is priced
+    const result = priceUsageRecord(record);
+
+    // THEN the whole prompt bills at the $3.125/1M write rate, with no
+    // leftover direct input double-charged at $2.50/1M
+    expect(result.costUsd).toBeCloseTo(3.125, 6);
+  });
 });

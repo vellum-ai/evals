@@ -112,8 +112,9 @@ export async function findOpenHostPort(): Promise<number> {
 /**
  * Hosts the recording jail allows model API traffic to. The mitmproxy
  * addon (`addon.py`) reconstructs per-request token usage from the
- * providers it recognizes (Anthropic today); the rest flow through
- * unparsed but reachable, so their runs simply lack a recorded cost.
+ * providers it recognizes (Anthropic and the OpenAI family today); the
+ * rest flow through unparsed but reachable, so their runs simply lack a
+ * recorded cost.
  * Keeping the list to genuine model providers means the addon never
  * tries to parse usage out of a github tarball — non-model infra hosts
  * belong in DEFAULT_INFRA_ALLOW_HOSTS.
@@ -160,6 +161,7 @@ export const DEFAULT_MODEL_ALLOW_HOSTS = [
  */
 export const RECORDED_USAGE_HOSTS = [
   "api.anthropic.com",
+  "api.openai.com",
   "api.fireworks.ai",
   "openrouter.ai",
 ];

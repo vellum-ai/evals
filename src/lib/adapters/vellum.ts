@@ -94,12 +94,25 @@ function selectProviderEnv(source: NodeJS.ProcessEnv): Record<string, string> {
 }
 
 /**
- * Absolute path to the vellum-assistant repo root, derived from this file's
- * location (`evals/src/lib/adapters/vellum.ts` → repo root via four `..`s).
- * Passed to `vellum hatch --source <path>` so each eval run builds CLI/daemon
- * images from the local source tree.
+ * Absolute path to the vellum-assistant checkout the run builds its
+ * CLI/daemon images from. Passed to `vellum hatch --source <path>`, and
+ * used to locate the `plugins/` fixture tree the recording sidecar serves
+ * plugin installs from.
+ *
+ * `EVALS_VELLUM_SOURCE` names the checkout explicitly. Setting it is how a
+ * run targets a specific assistant tree: point it at a branch worktree to
+ * measure a fix, then at `main` to get the before/after pair, without
+ * moving the evals checkout. Relative values resolve against the process
+ * cwd.
+ *
+ * Without it, the path is derived from this file's location
+ * (`<repo>/evals/src/lib/adapters/vellum.ts` → repo root via four `..`s),
+ * which is correct only when the evals harness lives inside the
+ * vellum-assistant tree.
  */
-function repoRootFromAdapter(): string {
+function vellumSourceRoot(): string {
+  const configured = process.env.EVALS_VELLUM_SOURCE?.trim();
+  if (configured) return resolve(configured);
   return resolve(import.meta.dir, "..", "..", "..", "..");
 }
 
@@ -340,12 +353,12 @@ export class VellumAgent implements BaseAgent {
         // install` traffic from disk instead of letting it egress to
         // github.com. Omitted in live mode so the install reaches real
         // public GitHub (see `livePluginInstall` above). Outside live mode
-        // the runner always runs inside the repo (`repoRootFromAdapter()`
+        // the runner always runs inside the repo (`vellumSourceRoot()`
         // drives the hatch `--source` arg below), so the fixtures path is
         // resolvable here.
         pluginFixturesDir: livePluginInstall
           ? undefined
-          : resolve(repoRootFromAdapter(), "plugins"),
+          : resolve(vellumSourceRoot(), "plugins"),
       });
 
       // Forward LLM provider API keys from the eval process env into the
@@ -368,7 +381,7 @@ export class VellumAgent implements BaseAgent {
           "--remote",
           "docker",
           "--source",
-          repoRootFromAdapter(),
+          vellumSourceRoot(),
           "--name",
           this.id,
           "--netns-container",

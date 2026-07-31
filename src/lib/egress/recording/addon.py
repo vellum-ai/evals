@@ -88,7 +88,7 @@ RECORDING_OUTPUT_PATH = os.environ.get(
 # Capped so a large SSE completion can't bloat `egress-usage.ndjson` (and
 # therefore the static report bundle) without bound; the full byte length
 # is always recorded alongside so the report can flag truncation.
-MAX_PAYLOAD_CHARS = int(os.environ.get("RECORDING_MAX_PAYLOAD_CHARS", "32768"))
+MAX_PAYLOAD_CHARS = int(os.environ.get("RECORDING_MAX_PAYLOAD_CHARS", "262144"))
 
 # When set, the request hook serves plugin install traffic from this
 # directory instead of letting it egress. Unset = mocking disabled,

@@ -31,6 +31,15 @@ every turn and the failure shows up here without any long-context setup.
 - `cold-request-count` == 0 (no full-prefix rebills)
 - `uncached-input-tokens` < 2000 across requests 2..N (only per-turn deltas)
 
+Provider scope: `first-request-write-coverage` is meaningful only for
+providers that report explicit cache writes (OpenAI GPT-5.6 explicit
+mode, Anthropic cache_creation). Implicit-cache providers such as
+Fireworks report no write tokens and legitimately score 0 on it; judge
+those arms on `steady-read-ratio` and `cold-request-count` alone.
+Measured healthy baselines (2026-07-30): GPT-5.6 Luna 99.7% coverage /
+99.1% steady reads; GLM 5.2 on Fireworks 99.3% steady reads with zero
+cold requests.
+
 ## Reading the artifact
 
 `cache-observations.json` in the run directory carries the per-request

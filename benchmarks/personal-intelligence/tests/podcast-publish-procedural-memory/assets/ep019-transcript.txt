@@ -1,0 +1,32 @@
+TITLE: Tools You Regret Building
+DATE: 2026-08-04
+DURATION: 39:47
+SUMMARY:
+Maya and Rob swap stories about the tools they wish they'd never built: the
+dashboard nobody reads, the bot that pings at 3 a.m., the config system with
+one user. A tool you have to babysit isn't a tool, it's a pet.
+
+Rob proposes the one-month funeral rule for internal tools, and Maya argues
+the real smell is any tool whose maintenance chat is busier than its users.
+LINKS:
+https://stackedafterdark.fm/episodes/19
+https://example.com/tool-funerals
+https://example.com/tool-funerals
+https://stackedafterdark.fm/episodes/19
+CHAPTERS:
+[00:00:13] Cold open
+[00:05:07] The dashboard nobody reads
+[00:16:44] Pets versus tools
+[00:27:31] The one-month funeral rule
+[00:35:58] Listener questions
+TRANSCRIPT:
+[00:00:13] Rob: Stacked After Dark, episode nineteen. Maya, what's the worst tool you ever built?
+[00:00:27] Maya: A dashboard with eleven charts and zero viewers. Including me.
+[00:05:07] Maya: The dashboard nobody reads is a monument to a question nobody asked.
+[00:11:42] Rob: I read your dashboard once. It told me we had dashboards.
+[00:16:44] Rob: Pets versus tools. If you feed it more than it feeds you, it's a pet.
+[00:23:19] Maya: My bot pinged me at three in the morning to say it was still running. That's a pet.
+[00:27:31] Rob: The one-month funeral rule: any internal tool unused for a month gets a funeral, no exceptions.
+[00:33:05] Maya: And the maintenance-chat smell — if the channel about the tool is busier than the tool, bury it.
+[00:35:58] Maya: Listener questions. Sam asks how to sunset a tool your boss loves. Carefully, Sam.
+[00:39:20] Rob: That's the show. Go bury a tool you love and feel lighter.

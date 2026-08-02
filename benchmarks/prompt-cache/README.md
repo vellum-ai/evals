@@ -82,12 +82,12 @@ suggestions) that run on a cheaper model.
 All four are computed over the main model's requests, ordered by
 `recorded_at`, with non-2xx and zero-token records dropped.
 
-| Metric                         | Unit     | Optimal | Meaning                                                                                                   |
-| ------------------------------ | -------- | ------- | --------------------------------------------------------------------------------------------------------- |
+| Metric                         | Unit     | Optimal | Meaning                                                                                                                                                                                        |
+| ------------------------------ | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `first-request-write-coverage` | fraction | ~1.0    | Share of the cold request's cacheable prompt that was written to cache. 0 means no breakpoint was placed. Explicit-cache providers only; implicit-cache arms (Fireworks) legitimately score 0. |
-| `steady-read-ratio`            | fraction | > 0.8   | Share of prompt tokens served from cache across requests 2..N.                                            |
-| `cold-request-count`           | raw      | 0       | Requests after the first that read nothing from cache. Each is a full-prefix rebill.                      |
-| `uncached-input-tokens`        | raw      | small   | Base-rate prompt tokens across requests 2..N. Should be roughly the per-turn delta text.                  |
+| `steady-read-ratio`            | fraction | > 0.8   | Share of prompt tokens served from cache across requests 2..N.                                                                                                                                 |
+| `cold-request-count`           | raw      | 0       | Requests after the first that read nothing from cache. Each is a full-prefix rebill.                                                                                                           |
+| `uncached-input-tokens`        | raw      | small   | Base-rate prompt tokens across requests 2..N. Should be roughly the per-turn delta text.                                                                                                       |
 
 Providers disagree about whether cached tokens are counted inside the
 input count, so every record is first normalized to a disjoint

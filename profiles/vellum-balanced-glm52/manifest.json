@@ -1,0 +1,20 @@
+{
+  "species": "vellum",
+  "description": "Vellum Assistant with the active inference profile pinned to GLM 5.2 on Fireworks, tuned to match the managed Balanced profile (maxTokens 32000, effort high, thinking on). The incumbent arm of the Balanced-pin comparison: differs from vellum-balanced-luna only in provider and model. Requires FIREWORKS_API_KEY.",
+  "setup": [
+    "assistant keys set fireworks \"$FIREWORKS_API_KEY\"",
+    "assistant inference providers connections create fireworks-personal --provider fireworks --auth api_key --credential credential/fireworks/api_key",
+    "assistant config set llm.profiles.balanced-arm.provider fireworks",
+    "assistant config set llm.profiles.balanced-arm.provider_connection fireworks-personal",
+    "assistant config set llm.profiles.balanced-arm.model accounts/fireworks/models/glm-5p2",
+    "assistant config set llm.profiles.balanced-arm.maxTokens 32000",
+    "assistant config set llm.profiles.balanced-arm.effort high",
+    "assistant config set llm.profiles.balanced-arm.thinking.enabled true",
+    "assistant config set llm.profiles.balanced-arm.thinking.streamThinking true",
+    "assistant config set llm.activeProfile balanced-arm"
+  ],
+  "branding": {
+    "color": "#2E9A4E",
+    "logo": "<svg viewBox=\"43 45 89.2 92.1\" xmlns=\"http://www.w3.org/2000/svg\"><path fill=\"currentColor\" d=\"M65.2927 45L87.5854 93.3893L109.79 45H132.171L87.4084 137.09L43 45H65.2927Z\"/></svg>"
+  }
+}

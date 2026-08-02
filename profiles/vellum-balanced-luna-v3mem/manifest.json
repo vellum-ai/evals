@@ -1,0 +1,23 @@
+{
+  "species": "vellum",
+  "description": "vellum-balanced-luna with memory-v3 live forced on. First setup command probes whether workspace migration 105 already enabled memory.v3.live (its output lands in the setup logs); the last command force-enables it so the arm always exercises the memory-v3 volatility path.",
+  "setup": [
+    "assistant config get memory.v3.live || true",
+    "assistant keys set openai \"$OPENAI_API_KEY\"",
+    "assistant inference providers connections create openai-personal --provider openai --auth api_key --credential credential/openai/api_key",
+    "assistant config set llm.profiles.balanced-arm.provider openai",
+    "assistant config set llm.profiles.balanced-arm.provider_connection openai-personal",
+    "assistant config set llm.profiles.balanced-arm.model gpt-5.6-luna",
+    "assistant config set llm.profiles.balanced-arm.maxTokens 32000",
+    "assistant config set llm.profiles.balanced-arm.effort high",
+    "assistant config set llm.profiles.balanced-arm.thinking.enabled true",
+    "assistant config set llm.profiles.balanced-arm.thinking.streamThinking true",
+    "assistant config set llm.activeProfile balanced-arm",
+    "assistant config get memory.v3.live || true",
+    "assistant config set memory.v3.live true"
+  ],
+  "branding": {
+    "color": "#2E9A4E",
+    "logo": "<svg viewBox=\"43 45 89.2 92.1\" xmlns=\"http://www.w3.org/2000/svg\"><path fill=\"currentColor\" d=\"M65.2927 45L87.5854 93.3893L109.79 45H132.171L87.4084 137.09L43 45H65.2927Z\"/></svg>"
+  }
+}

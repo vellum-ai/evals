@@ -13,6 +13,7 @@ cd evals
 bun install
 cp .env.example .env
 # edit .env with your ANTHROPIC_API_KEY (required by the user simulator)
+# set EVALS_VELLUM_SOURCE to the vellum-assistant checkout under test
 
 bun run src/cli.ts run \
   --profiles p1,p2 \
@@ -75,11 +76,16 @@ evals/
 │   │       └── timeline-recall/
 │   │           ├── SPEC.md  # simulator briefing
 │   │           └── metrics/ # (optional) per-metric `.ts` scorers
-│   └── longmemeval-v2/
+│   ├── longmemeval-v2/
+│   │   ├── manifest.json    # displayName + unitDirName + unitNoun
+│   │   ├── data/            # gitignored; populate via `data/download.sh`
+│   │   ├── items/           # virtual unit dir — items materialized by `src/loader.ts`
+│   │   └── src/             # benchmark-local code (loader, fixtures, tests)
+│   └── prompt-cache/
 │       ├── manifest.json    # displayName + unitDirName + unitNoun
-│       ├── data/            # gitignored; populate via `data/download.sh`
-│       ├── items/           # virtual unit dir — items materialized by `src/loader.ts`
-│       └── src/             # benchmark-local code (loader, fixtures, tests)
+│       ├── README.md        # how to run it + what each metric means
+│       ├── scenarios/       # unit definitions (`SPEC.md` per scenario)
+│       └── src/             # benchmark-local code (runner, scoring, tests)
 ├── .env.example             # API key contract
 ├── package.json
 └── AGENTS.md                # Conventions
@@ -121,6 +127,25 @@ A benchmark lives at `benchmarks/<id>/`. The directory name is the benchmark id.
 - `unitNoun` — singular noun for one unit (`test`, `item`, `question`); used in CLI output so each benchmark speaks its own vocabulary.
 
 Run `evals benchmarks list` to see all committed benchmarks.
+
+Benchmarks that need more than a manifest to run document themselves next
+to their code: see [`benchmarks/longmemeval-v2/README.md`](benchmarks/longmemeval-v2/README.md)
+for its dataset download, and [`benchmarks/prompt-cache/README.md`](benchmarks/prompt-cache/README.md)
+for the prompt-cache metrics and per-provider invocations.
+
+## Pointing a run at an assistant build
+
+`EVALS_VELLUM_SOURCE` names the vellum-assistant checkout the Vellum
+adapter builds its CLI/daemon images from (`vellum hatch --source
+<path>`). It is required whenever the evals repo does not live inside the
+vellum-assistant tree, and it is how before/after comparisons are made:
+run a benchmark with it pointed at a branch worktree, then again with it
+pointed at `main`, and diff the two sessions in the report server.
+
+```bash
+EVALS_VELLUM_SOURCE=/path/to/vellum-assistant \
+  bun run src/cli.ts run --profiles vellum-default --benchmark prompt-cache
+```
 
 ## Test
 

@@ -268,18 +268,25 @@ class ResponseHookGzipTest(unittest.TestCase):
             record["model"], "accounts/fireworks/models/minimax-m3"
         )
 
-    def test_openai_responses_host_is_not_recorded(self) -> None:
-        """OpenAI's `api.openai.com` is intentionally left out of the recorded set.
+    def test_openai_responses_host_is_recorded(self) -> None:
+        """`api.openai.com` records usage from the Responses API.
 
-        The assistant's `openai` provider speaks the Responses API
-        (`/v1/responses`), which the chat-completions parser cannot read, so the
-        host is excluded from interception rather than recorded as $0.
+        The assistant's `openai` provider speaks `/v1/responses`, so the
+        addon dispatches that path to the Responses parser and hoists the
+        nested cache counters onto the flat record shape.
         """
         # GIVEN an OpenAI Responses API response on api.openai.com
         response_body = json.dumps(
             {
-                "model": "gpt-5.2",
-                "usage": {"input_tokens": 100, "output_tokens": 20},
+                "model": "gpt-5.6-luna",
+                "usage": {
+                    "input_tokens": 9140,
+                    "output_tokens": 220,
+                    "input_tokens_details": {
+                        "cached_tokens": 9000,
+                        "cache_write_tokens": 100,
+                    },
+                },
             }
         ).encode("utf-8")
         flow = _FakeFlow(
@@ -299,10 +306,16 @@ class ResponseHookGzipTest(unittest.TestCase):
         # WHEN the response hook runs
         addon.response(flow)
 
-        # THEN no usage record is written and the host is not in the recorded set
-        self.assertEqual(self._records(), [])
-        self.assertFalse(addon._is_recorded_host("api.openai.com"))
-        self.assertNotIn("api.openai.com", addon.OPENAI_COMPATIBLE_HOSTS)
+        # THEN one record lands, labelled with the openai provider
+        records = self._records()
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record["provider"], "openai")
+        self.assertEqual(record["model"], "gpt-5.6-luna")
+        self.assertEqual(record["input_tokens"], 9140)
+        self.assertEqual(record["cache_read_input_tokens"], 9000)
+        self.assertEqual(record["cache_creation_input_tokens"], 100)
+        self.assertTrue(addon._is_recorded_host("api.openai.com"))
 
     def test_unmetered_host_is_skipped(self) -> None:
         """A response from a non-parsed allowlisted host records nothing."""

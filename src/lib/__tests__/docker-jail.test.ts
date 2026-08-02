@@ -8,7 +8,9 @@ import {
   DEFAULT_EMBEDDING_ALLOW_HOSTS,
   DEFAULT_INFRA_ALLOW_HOSTS,
   DEFAULT_MODEL_ALLOW_HOSTS,
+  RECORDED_USAGE_HOSTS,
   VELLUM_ALLOW_HOSTS,
+  recordingTlsHostsRegex,
   applyDockerEgressJail,
   installRecordingCa,
   dockerEgressJailContainerName,
@@ -247,10 +249,34 @@ describe("docker egress jail", () => {
     }
   });
 
+  test("RECORDED_USAGE_HOSTS mirrors the addon's parse set", () => {
+    // Reachability and interception are separate gates. A host in
+    // DEFAULT_MODEL_ALLOW_HOSTS but missing here is reachable yet never
+    // decrypted, so its runs produce ZERO usage records with no warning.
+    // This list must equal `api.anthropic.com` plus the keys of
+    // `OPENAI_COMPATIBLE_HOSTS` in `recording/addon.py`. Gemini stays out
+    // because no parser reads its wire format yet.
+    expect([...RECORDED_USAGE_HOSTS].sort()).toEqual([
+      "api.anthropic.com",
+      "api.fireworks.ai",
+      "api.openai.com",
+      "openrouter.ai",
+    ]);
+    for (const host of RECORDED_USAGE_HOSTS) {
+      expect(DEFAULT_MODEL_ALLOW_HOSTS).toContain(host);
+    }
+    // Dots are escaped in the mitmdump regex so `openrouter.ai` can't
+    // match `openrouterXai`, and each entry is anchored to `<host>:443`.
+    expect(recordingTlsHostsRegex()).toBe(
+      "^(api\\.anthropic\\.com|api\\.openai\\.com|api\\.fireworks\\.ai|openrouter\\.ai):443$",
+    );
+  });
+
   test("DEFAULT_MODEL_ALLOW_HOSTS stays bounded to recognized model providers", () => {
     // The mitmproxy addon (addon.py) parses usage for the providers it
-    // recognizes (Anthropic, plus OpenAI-compatible Fireworks/OpenRouter via
-    // the shared chat-completions parser); Gemini flows through unparsed.
+    // recognizes (Anthropic, plus the OpenAI family: OpenAI's Responses
+    // API and the chat-completions shape Fireworks/OpenRouter serve).
+    // Gemini flows through unparsed.
     // Adding a non-model host here would be dead code in the addon at best,
     // so new infra hosts belong in DEFAULT_INFRA_ALLOW_HOSTS and bulk asset
     // downloads in DEFAULT_EMBEDDING_ALLOW_HOSTS.

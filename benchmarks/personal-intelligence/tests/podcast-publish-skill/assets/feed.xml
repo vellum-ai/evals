@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Stacked After Dark</title>
+    <link>https://stackedafterdark.fm</link>
+    <description>Maya and Rob on the things we build after work builds us down. New episodes most Tuesdays.</description>
+    <language>en-us</language>
+    <item>
+      <title>Ep. 016 — Shipping on a Deadline You Invented</title>
+      <guid isPermaLink="false">stackedpods-ep-016</guid>
+      <pubDate>Tue, 14 Jul 2026 17:00:00 -0400</pubDate>
+      <description>Maya and Rob dig into self-imposed deadlines: why fake urgency works on real brains, and how Rob shipped his side project by telling four friends a launch date he made up on the spot.</description>
+    </item>
+    <item>
+      <title>Ep. 017 — The Backlog Is a Graveyard and That's Fine</title>
+      <guid isPermaLink="false">stackedpods-ep-017</guid>
+      <pubDate>Tue, 21 Jul 2026 17:00:00 -0400</pubDate>
+      <description>Maya and Rob make peace with the backlog. Every idea you file away is a tiny funeral, and the healthiest builders hold the service and move on instead of promising resurrection.</description>
+    </item>
+  </channel>
+</rss>

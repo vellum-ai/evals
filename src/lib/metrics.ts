@@ -19,7 +19,13 @@ export interface PersistedProgressEvent extends EvalProgressEvent {
   emittedAt: string;
 }
 
-export const RUNS_DIR = ".runs";
+/**
+ * Root directory for run artifacts. Overridable via `EVALS_RUNS_DIR` so
+ * the unit-test suite (see `test-preload.ts`, wired in `bunfig.toml`) can
+ * point every fixture write at a throwaway tempdir — `bun test` used to
+ * share the production `.runs/` and could disturb real run artifacts.
+ */
+export const RUNS_DIR = process.env.EVALS_RUNS_DIR ?? ".runs";
 
 /**
  * Why a usage record could not be priced. Surfaced in the report's Usage

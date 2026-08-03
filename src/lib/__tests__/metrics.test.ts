@@ -26,6 +26,7 @@ const testDef: TestDef = {
   specPath: "/tmp/SPEC.md",
   setupPath: "/tmp/setup.ts",
   setupCommands: [],
+  betweenPhaseDirectives: [],
   metricsDir: "/tmp/metrics",
   metricPaths: [],
 };

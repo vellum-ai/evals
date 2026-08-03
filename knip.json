@@ -3,6 +3,8 @@
     "src/**/*.test.ts",
     "benchmarks/*/src/**/*.test.ts",
     "benchmarks/*/src/run.ts",
+    "benchmarks/*/tests/*/metrics/*.ts",
+    "benchmarks/*/tests/*/setup.ts",
     "scripts/*.ts"
   ],
   "project": ["src/**/*.ts", "src/**/*.tsx", "benchmarks/*/src/**/*.ts"]

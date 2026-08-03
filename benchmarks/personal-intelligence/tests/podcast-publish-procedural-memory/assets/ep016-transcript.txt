@@ -1,0 +1,28 @@
+TITLE: Shipping on a Deadline You Invented
+DATE: 2026-07-14
+DURATION: 38:05
+SUMMARY:
+Maya and Rob dig into self-imposed deadlines: why fake urgency works on real
+brains, and how Rob shipped his side project by telling four friends a launch
+date he made up on the spot.
+
+They also cover the two-week rule for killing stalled projects, and why
+public accountability beats private discipline for solo builders.
+LINKS:
+https://stackedafterdark.fm/episodes/16
+https://example.com/two-week-rule
+CHAPTERS:
+[00:00:14] Cold open
+[00:03:47] The invented deadline
+[00:19:22] Two-week rule
+[00:31:08] Listener questions
+TRANSCRIPT:
+[00:00:14] Maya: Welcome back to Stacked After Dark, the show about what we build after work builds us down.
+[00:00:29] Rob: Episode sixteen. I shipped the thing, Maya. I actually shipped it.
+[00:00:41] Maya: You shipped it because you lied to four people about a launch date.
+[00:03:47] Rob: Okay, the invented deadline. Here's the trick — the date is fake but the dinner reservation is real.
+[00:12:03] Maya: The brain can't tell the difference between urgency you found and urgency you planted.
+[00:19:22] Maya: Two-week rule. If a project hasn't moved in two weeks, it gets a funeral or a sprint, nothing in between.
+[00:26:40] Rob: A funeral with cake. Always cake.
+[00:31:08] Maya: Listener questions. Dana asks how we deal with scope creep on weekend projects.
+[00:36:50] Rob: That's the show. Tell one friend a fake deadline and see what happens.

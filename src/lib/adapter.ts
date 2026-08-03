@@ -145,6 +145,20 @@ export interface BaseAgent {
    */
   newConversation?(): Promise<void>;
   /**
+   * Force the species' background memory-retrospective pass over the
+   * current conversation and wait for it to complete. On Vellum this is
+   * the async job that reviews a conversation after the fact and — on
+   * v3-live workspaces — authors procedural skills from tool-use it
+   * finds. Multi-phase tests use it (via the `trigger-retrospective`
+   * phase directive) to compress "background learning happened between
+   * sessions" into a deterministic point in the run.
+   *
+   * Optional capability — species without an equivalent background
+   * learning pass omit it, and the runner fails the directive with a
+   * clear error.
+   */
+  triggerRetrospective?(): Promise<void>;
+  /**
    * Resolve a pending tool confirmation the agent raised. Optional
    * capability: species whose tools never gate on confirmation (or that
    * run with everything auto-approved) may omit it. Runners that auto

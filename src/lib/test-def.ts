@@ -15,6 +15,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { assertSafeId, getTestsDir, resolveUnder } from "./catalog";
 import { pathExists } from "./fs";
 
+import type { PhaseDirective } from "./phase-directive";
 import type { TestSetupCommand } from "./setup-command";
 
 export interface TestDef {
@@ -22,6 +23,19 @@ export interface TestDef {
   id: string;
   /** Absolute path to `<unitsDir>/<id>/SPEC.md`. */
   specPath: string;
+  /**
+   * Absolute path to optional `<unitsDir>/<id>/SPEC.phase2.md`. When
+   * present the test runs two simulator conversations: the primary SPEC
+   * drives phase 1; after its simulator ends, `betweenPhaseDirectives`
+   * execute, and this SPEC briefs the simulator for phase 2. Undefined
+   * for single-phase tests.
+   */
+  phase2SpecPath?: string;
+  /**
+   * Directives executed between phase 1 and phase 2 (from optional
+   * `between-phases.ts`). Only meaningful when `phase2SpecPath` is set.
+   */
+  betweenPhaseDirectives: PhaseDirective[];
   /** Absolute path to optional `<unitsDir>/<id>/setup.ts`. */
   setupPath: string;
   /** Deterministic commands run before the simulator starts. */
@@ -44,6 +58,21 @@ function parseSpecStatus(spec: string): string | undefined {
   if (!frontmatter) return undefined;
   const status = frontmatter[1].match(/^status:\s*(\S+)\s*$/m);
   return status?.[1];
+}
+
+async function loadBetweenPhaseDirectives(
+  betweenPath: string,
+): Promise<PhaseDirective[]> {
+  if (!(await pathExists(betweenPath))) return [];
+  const imported = (await import(betweenPath)) as {
+    default?: PhaseDirective[];
+  };
+  if (!Array.isArray(imported.default)) {
+    throw new Error(
+      `Test between-phases at ${betweenPath} must export default PhaseDirective[]`,
+    );
+  }
+  return imported.default;
 }
 
 async function loadSetupCommands(
@@ -95,9 +124,21 @@ export async function loadTestDef(
     if (code !== "ENOENT") throw err;
   }
 
+  const phase2Path = resolveUnder(unitsDir, id, "SPEC.phase2.md");
+  const betweenPath = resolveUnder(unitsDir, id, "between-phases.ts");
+  const hasPhase2 = await pathExists(phase2Path);
+  const betweenPhaseDirectives = await loadBetweenPhaseDirectives(betweenPath);
+  if (betweenPhaseDirectives.length > 0 && !hasPhase2) {
+    throw new Error(
+      `Test "${id}" has between-phases.ts but no SPEC.phase2.md — directives need a phase 2 to lead into`,
+    );
+  }
+
   return {
     id,
     specPath,
+    phase2SpecPath: hasPhase2 ? phase2Path : undefined,
+    betweenPhaseDirectives,
     setupPath,
     setupCommands: await loadSetupCommands(setupPath),
     metricsDir,

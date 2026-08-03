@@ -1384,3 +1384,166 @@ describe("chartDomain", () => {
     expect(chartDomain([0, 50, 100])).toEqual({ lo: 0, hi: 100 });
   });
 });
+
+describe("phase timing bar", () => {
+  // Mirrors the qa.vellum.ai run of podcast-publish-procedural-memory:
+  // 2m54s wall clock, 144ms setup, ~1m41s hatch, a two-phase conversation
+  // with a trigger-retrospective + new-conversation break in the middle.
+  const multiPhase: ReportRunDetail = {
+    ...executionDetail,
+    startedAt: "2026-08-03T15:20:44.678Z",
+    completedAt: "2026-08-03T15:23:38.888Z",
+    ingestAssistantEvents: [],
+    assistantEvents: [
+      {
+        message: { type: "assistant_text_delta", text: "ep18" },
+        emittedAt: "2026-08-03T15:22:26.000Z",
+      },
+      {
+        message: { type: "assistant_text_delta", text: "ep19" },
+        emittedAt: "2026-08-03T15:23:37.000Z",
+      },
+    ],
+    progressEvents: [
+      {
+        step: "hatch",
+        status: "start",
+        message: "Hatching assistant",
+        emittedAt: "2026-08-03T15:20:45.000Z",
+      },
+      {
+        step: "hatch",
+        status: "done",
+        message: "Assistant ready",
+        emittedAt: "2026-08-03T15:22:25.000Z",
+      },
+      {
+        step: "setup",
+        status: "start",
+        message: "Running setup 1/2",
+        emittedAt: "2026-08-03T15:22:25.100Z",
+      },
+      {
+        step: "setup",
+        status: "done",
+        message: "Setup 1/2 complete",
+        emittedAt: "2026-08-03T15:22:25.180Z",
+      },
+      {
+        step: "setup",
+        status: "done",
+        message: "Setup 2/2 complete",
+        emittedAt: "2026-08-03T15:22:25.244Z",
+      },
+      {
+        step: "phase",
+        status: "start",
+        message: "Running trigger-retrospective",
+        emittedAt: "2026-08-03T15:22:50.000Z",
+      },
+      {
+        step: "phase",
+        status: "done",
+        message: "new-conversation complete",
+        emittedAt: "2026-08-03T15:22:57.000Z",
+      },
+      {
+        step: "metrics",
+        status: "start",
+        message: "Running metrics",
+        emittedAt: "2026-08-03T15:23:38.600Z",
+      },
+      {
+        step: "metrics",
+        status: "done",
+        message: "Metrics complete",
+        emittedAt: "2026-08-03T15:23:38.870Z",
+      },
+    ],
+  };
+
+  test("multi-phase run splits the conversation around its between-phase directives", () => {
+    const html = renderReportPage({ kind: "execution", run: multiPhase });
+
+    expect(html).toContain("Phase 1");
+    expect(html).toContain("Between phases");
+    expect(html).toContain("Phase 2");
+    // The LongMemEval vocabulary must not leak onto a run with no ingest turn.
+    expect(html).not.toContain(">Ingest<");
+    expect(html).not.toContain(">Switch<");
+  });
+
+  test("hatch is measured from the hatch step, not inferred from an ingest gap", () => {
+    const html = renderReportPage({ kind: "execution", run: multiPhase });
+
+    // 15:20:45 → 15:22:25 is 1m 40s. Before the fix this run had no ingest
+    // stream, so hatch resolved to undefined and its whole span vanished
+    // from the bar while still counting toward the 2m 54s total.
+    expect(html).toContain("Hatch");
+    expect(html).toContain("1m 40s");
+  });
+
+  test("setup spans every setup command, not just the first", () => {
+    const html = renderReportPage({ kind: "execution", run: multiPhase });
+
+    // 15:22:25.100 → 15:22:25.244 across two setup commands = 144ms.
+    // Taking the first setup:done would have reported 80ms.
+    expect(html).toContain("144ms");
+  });
+
+  test("multi-word phase labels collapse to a single CSS class", () => {
+    const html = renderReportPage({ kind: "execution", run: multiPhase });
+
+    expect(html).toContain("phase-between-phases");
+    // `phase-between phases` would parse as two class names and lose the color.
+    expect(html).not.toContain("phase-between phases");
+  });
+
+  test("single-phase run reports one Conversation segment", () => {
+    const html = renderReportPage({
+      kind: "execution",
+      run: {
+        ...multiPhase,
+        progressEvents: multiPhase.progressEvents.filter(
+          (e) => e.step !== "phase",
+        ),
+      },
+    });
+
+    expect(html).toContain("Conversation");
+    expect(html).not.toContain("Between phases");
+  });
+
+  test("LongMemEval-shaped run keeps its ingest/switch/question breakdown", () => {
+    const html = renderReportPage({
+      kind: "execution",
+      run: {
+        ...multiPhase,
+        ingestAssistantEvents: [
+          {
+            message: { type: "assistant_text_delta", text: "haystack" },
+            emittedAt: "2026-08-03T15:22:26.000Z",
+          },
+          {
+            message: { type: "message_complete" },
+            emittedAt: "2026-08-03T15:22:40.000Z",
+          },
+        ],
+        assistantEvents: [
+          {
+            message: { type: "assistant_text_delta", text: "answer" },
+            emittedAt: "2026-08-03T15:23:37.000Z",
+          },
+        ],
+        progressEvents: multiPhase.progressEvents.filter(
+          (e) => e.step !== "phase",
+        ),
+      },
+    });
+
+    expect(html).toContain("Ingest");
+    expect(html).toContain("Switch");
+    expect(html).toContain("Question");
+    expect(html).not.toContain("Conversation");
+  });
+});

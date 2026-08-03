@@ -780,7 +780,8 @@ export class VellumAgent implements BaseAgent {
         ],
         {
           logPath:
-            runArtifacts(this.id).runDir + "/subprocess-retrospective.log",
+            runArtifacts(this.id).runDir +
+            `/subprocess-retrospective-attempt-${attempt}.log`,
           logStep: `retrospective-attempt-${attempt}`,
         },
       );
@@ -822,8 +823,12 @@ export class VellumAgent implements BaseAgent {
    * the artifacts alone, after the container is gone.
    */
   private async captureRetrospectiveDiagnostics(): Promise<void> {
-    const logPath =
-      runArtifacts(this.id).runDir + "/subprocess-retrospective-diag.log";
+    // One file PER probe. `CommandRunner`'s `logPath` overwrites rather
+    // than appends, so three probes sharing one path silently left only
+    // the last — which is exactly how the memory-config extract went
+    // missing from a hosted run's artifacts while the checkpoint survived.
+    const diagLog = (name: string): string =>
+      `${runArtifacts(this.id).runDir}/subprocess-retrospective-${name}.log`;
     await this.runner
       .run(
         this.cliCommand,
@@ -837,7 +842,7 @@ export class VellumAgent implements BaseAgent {
           "list",
           "--json",
         ],
-        { logPath, logStep: "retrospective-state" },
+        { logPath: diagLog("state"), logStep: "retrospective-state" },
       )
       .catch(() => undefined);
     await this.runner
@@ -854,7 +859,7 @@ export class VellumAgent implements BaseAgent {
           `const cfg = JSON.parse(require("fs").readFileSync("${CONTAINER_WORKSPACE_DIR}/config.json", "utf8"));` +
             `console.log(JSON.stringify({ memoryEnabled: cfg.memory?.enabled, v3: cfg.memory?.v3 ?? null, retrospective: cfg.memory?.retrospective ?? null }));`,
         ],
-        { logPath, logStep: "workspace-config" },
+        { logPath: diagLog("memory-config"), logStep: "workspace-config" },
       )
       .catch(() => undefined);
     // The workspace-migrations checkpoint records which migrations ran and
@@ -878,7 +883,10 @@ export class VellumAgent implements BaseAgent {
             `const rows = Object.entries(cp.applied ?? {}).map(([id, e]) => ({ id, at: e.appliedAt ?? e.startedAt ?? "" })).sort((a, b) => a.at.localeCompare(b.at));` +
             `console.log(JSON.stringify({ isNewWorkspace: cp.isNewWorkspace ?? null, migration105: key ? { id: key, ...cp.applied[key] } : null, appliedCount: rows.length, earliest: rows.slice(0, 3), latest: rows.slice(-3) }));`,
         ],
-        { logPath, logStep: "migrations-checkpoint" },
+        {
+          logPath: diagLog("migrations-checkpoint"),
+          logStep: "migrations-checkpoint",
+        },
       )
       .catch(() => undefined);
   }

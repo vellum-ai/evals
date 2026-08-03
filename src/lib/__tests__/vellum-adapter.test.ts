@@ -56,6 +56,8 @@ class FakeRunner implements CommandRunner {
   readonly runs: RunCall[] = [];
   readonly spawns: Array<{ command: string; args: string[] }> = [];
   readonly process = new FakeProcess();
+  /** Stands in for the retrospective's `--json` line when a test needs it. */
+  retrospectiveStdout?: string;
 
   async run(
     command: string,
@@ -63,6 +65,12 @@ class FakeRunner implements CommandRunner {
     opts?: RunOptions,
   ): Promise<CommandResult> {
     this.runs.push({ command, args, opts });
+    if (
+      this.retrospectiveStdout !== undefined &&
+      args.join(" ").includes("memory retrospective run")
+    ) {
+      return { exitCode: 0, stdout: this.retrospectiveStdout, stderr: "" };
+    }
     // Two call shapes invoke `assistant conversations new` in the
     // adapter:
     //   1. `seed-conversation` builds a single shell script and
@@ -1458,5 +1466,67 @@ describe("triggerRetrospective diagnostics", () => {
     ).toBe(true);
     expect(diagPaths.some((p) => p.endsWith("-state.log"))).toBe(true);
     expect(diagPaths.some((p) => /-attempt-\d+\.log$/.test(p))).toBe(true);
+  });
+
+  test("exports the retrospective's own fork conversation", async () => {
+    const runner = new FakeRunner();
+    // The shape the CLI actually prints on a successful review pass.
+    runner.retrospectiveStdout = JSON.stringify({
+      kind: "invoked",
+      backgroundConversationId: "019fc903-f6b8-70cb-b5b9-49b2b5b9c657",
+      cutoffMessageId: "019fc903-dc67-7743-bf12-371b1e31cfcf",
+      newMessageCount: 10,
+    });
+    const agent = new VellumAgent({
+      runner,
+      cliCommand: "vellum",
+      profile,
+      testId: "podcast-publish-procedural-memory",
+      runId: "eval-run-fork",
+      processEnv: {},
+    });
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
+
+    await agent.triggerRetrospective!();
+
+    // A retrospective that authors nothing still produces one content
+    // block. Without this export the reasoning dies with the container,
+    // which is what forced a live-container investigation to tell
+    // "declined to capture" apart from "had nothing to capture".
+    const exportCall = runner.runs.find((r) =>
+      r.args.join(" ").includes("conversations export"),
+    );
+    expect(exportCall).toBeDefined();
+    expect(exportCall!.args).toContain("019fc903-f6b8-70cb-b5b9-49b2b5b9c657");
+    expect(exportCall!.opts?.logPath).toMatch(
+      /subprocess-retrospective-fork\.log$/,
+    );
+  });
+
+  test("skips the fork export when no fork id was reported", async () => {
+    // `disabled` / `no_new_messages` outcomes carry no fork; exporting a
+    // parsed-out fragment of the wrong string would write a confusing
+    // empty artifact rather than an honest absent one.
+    const runner = new FakeRunner();
+    runner.retrospectiveStdout = JSON.stringify({ kind: "invoked" });
+    const agent = new VellumAgent({
+      runner,
+      cliCommand: "vellum",
+      profile,
+      testId: "podcast-publish-procedural-memory",
+      runId: "eval-run-nofork",
+      processEnv: {},
+    });
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
+
+    await agent.triggerRetrospective!();
+
+    expect(
+      runner.runs.some((r) =>
+        r.args.join(" ").includes("conversations export"),
+      ),
+    ).toBe(false);
   });
 });

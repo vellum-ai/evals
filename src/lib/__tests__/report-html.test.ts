@@ -1547,3 +1547,30 @@ describe("phase timing bar", () => {
     expect(html).not.toContain("Conversation");
   });
 });
+
+describe("inapplicable metric rendering", () => {
+  test("renders n/a rather than 0% for a metric the run could not exercise", () => {
+    const html = renderReportPage({
+      kind: "execution",
+      run: {
+        ...executionDetail,
+        metrics: [
+          {
+            name: "proactive-skill-capture",
+            score: 0,
+            applicable: false,
+            reason: "Not applicable: phase 1 never executed the script.",
+          },
+        ],
+      },
+    });
+
+    // The metric's cell reads n/a rather than 0.00% — 0% would say "the
+    // agent failed at this", the exact misreading the flag prevents.
+    expect(html).toContain("n/a");
+    expect(html).toContain("proactive-skill-capture");
+    expect(html).toContain(
+      "Not applicable: phase 1 never executed the script.",
+    );
+  });
+});

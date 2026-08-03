@@ -305,9 +305,12 @@ export interface ReportTestInSession {
 }
 
 export function scoreTotal(metrics: MetricResult[]): number {
-  if (metrics.length === 0) return 0;
-  const weight = 1 / metrics.length;
-  return metrics.reduce((sum, metric) => sum + metric.score * weight, 0);
+  // Metrics the run could not exercise are excluded rather than averaged
+  // in as zeros: an unmeasurable dimension is not a failed one.
+  const scored = metrics.filter((metric) => metric.applicable !== false);
+  if (scored.length === 0) return 0;
+  const weight = 1 / scored.length;
+  return scored.reduce((sum, metric) => sum + metric.score * weight, 0);
 }
 
 function fallbackStatus(

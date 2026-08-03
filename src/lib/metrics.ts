@@ -180,6 +180,15 @@ export type MetricUnit = "fraction" | "raw";
 export interface MetricResult {
   name: string;
   score: number;
+  /**
+   * `false` when the run never established this metric's precondition, so
+   * its score carries no information about the agent. Such a metric is
+   * EXCLUDED from `scoreTotal` rather than averaged in as a zero — an
+   * unmeasurable dimension is not a failed one, and reporting it as 0 is
+   * how a blocked environment gets mistaken for bad behavior. Defaults to
+   * `true` when omitted.
+   */
+  applicable?: boolean;
   reason?: string;
   metadata?: Record<string, unknown>;
   /** Render hint for the report. Defaults to `"fraction"` when omitted. */

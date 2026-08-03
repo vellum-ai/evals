@@ -19,6 +19,7 @@ import {
 import {
   findExecutionRunId,
   listReportSessions,
+  scoreTotal,
   readProfileInSession,
   readReportRun,
   readReportSession,
@@ -804,5 +805,32 @@ describe("report data", () => {
     const ours = sessions.find((s) => s.sessionId === sessionTag);
     expect(ours).toBeDefined();
     expect(ours!.status).toBe("partial");
+  });
+});
+
+describe("scoreTotal with inapplicable metrics", () => {
+  test("excludes inapplicable metrics instead of averaging them as zeros", () => {
+    // A run that couldn't exercise a metric's precondition must not have
+    // that dimension counted as a failure — an unmeasurable dimension is
+    // not a failed one.
+    const score = scoreTotal([
+      { name: "a", score: 1 },
+      { name: "b", score: 1 },
+      { name: "blocked", score: 0, applicable: false },
+    ]);
+    expect(score).toBe(1);
+  });
+
+  test("applicable: true and omitted both count normally", () => {
+    expect(
+      scoreTotal([
+        { name: "a", score: 1, applicable: true },
+        { name: "b", score: 0 },
+      ]),
+    ).toBe(0.5);
+  });
+
+  test("all-inapplicable scores 0 rather than dividing by zero", () => {
+    expect(scoreTotal([{ name: "a", score: 0, applicable: false }])).toBe(0);
   });
 });

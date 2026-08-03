@@ -523,4 +523,96 @@ describe("UserSimulator", () => {
       }),
     ).rejects.toThrow(SimulatorParseError);
   });
+
+  test("sends a scripted phase opener without consulting the model", async () => {
+    // GIVEN a SPEC that scripts its opener verbatim
+    const dir = await mkdtemp(join(tmpdir(), "evals-sim-"));
+    const specPath = join(dir, "SPEC.md");
+    await writeFile(
+      specPath,
+      [
+        "## What you ask",
+        "",
+        "Open the conversation with this message, verbatim:",
+        "",
+        "> Episode 19's transcript is in your workspace as",
+        "> episodes/ep019-transcript.txt. Publish it like the others.",
+        "",
+        "## End condition",
+        "Stop when published.",
+      ].join("\n"),
+      "utf8",
+    );
+    const test = { ...(await makeTestDef()), specPath };
+
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      throw new Error("the model must not be asked to retype a fixed string");
+    }) as unknown as typeof fetch;
+    const simulator = new UserSimulator({ apiKey: "test-key", maxTurns: 5 });
+
+    // WHEN the phase opens — with phase 1's turns already in the
+    // transcript, as they are at a phase-2 boundary
+    const decision = await simulator.decide({
+      test,
+      transcript: [
+        {
+          role: "simulator",
+          content: "publish ep18",
+          emittedAt: "2026-08-03T19:04:45.000Z",
+        },
+        {
+          role: "assistant",
+          content: "done",
+          emittedAt: "2026-08-03T19:05:03.000Z",
+        },
+      ],
+      isPhaseOpener: true,
+    });
+
+    // THEN the SPEC's text goes out byte-for-byte, no API call. Routing
+    // this through the model let a run send "I need to send the opening
+    // message as specified in the SPEC. Let me start fresh:" ahead of the
+    // real opener — leaking the test's existence to the agent under test.
+    expect(called).toBe(false);
+    expect(decision).toEqual({
+      action: "send",
+      message: {
+        content:
+          "Episode 19's transcript is in your workspace as " +
+          "episodes/ep019-transcript.txt. Publish it like the others.",
+      },
+      reason: "scripted SPEC opener",
+    });
+  });
+
+  test("falls back to the model when the SPEC scripts no opener", async () => {
+    // ecomm-support-chat has no cue line and must keep working.
+    const test = await makeTestDef();
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: "my order never arrived" }],
+          stop_reason: "end_turn",
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const simulator = new UserSimulator({ apiKey: "test-key", maxTurns: 5 });
+
+    const decision = await simulator.decide({
+      test,
+      transcript: [],
+      isPhaseOpener: true,
+    });
+
+    expect(called).toBe(true);
+    expect(decision).toEqual({
+      action: "send",
+      message: { content: "my order never arrived" },
+    });
+  });
 });

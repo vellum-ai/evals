@@ -23,6 +23,15 @@ export interface SimulatorInput {
    * turn; absent, it decides the next user message (or to end).
    */
   pendingConfirmation?: ToolConfirmationRequest;
+  /**
+   * True on the first user turn of a phase. When the phase's SPEC scripts
+   * a verbatim opener, that turn has no decision in it — the simulator
+   * sends the scripted string rather than asking the model to reproduce
+   * it. Multi-phase runs set this again at each phase boundary, since
+   * phase 2's opener is scripted too even though the transcript already
+   * holds phase 1's turns.
+   */
+  isPhaseOpener?: boolean;
 }
 
 export type SimulatorDecision =

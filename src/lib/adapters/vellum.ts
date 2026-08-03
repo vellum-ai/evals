@@ -788,7 +788,7 @@ export class VellumAgent implements BaseAgent {
       lastOutput = `${result.stdout}\n${result.stderr}`;
       const midTurn = /source_processing/.test(lastOutput);
       if (result.exitCode === 0 && !midTurn) {
-        await this.captureRetrospectiveDiagnostics();
+        await this.captureRetrospectiveDiagnostics(lastOutput);
         // The CLI exits 0 for every outcome; only `invoked` means the
         // review pass actually ran. `disabled` / `no_new_messages` here
         // mean the eval environment is broken (memory off, empty
@@ -807,7 +807,7 @@ export class VellumAgent implements BaseAgent {
         await new Promise((resolveDelay) => setTimeout(resolveDelay, 3000));
       }
     }
-    await this.captureRetrospectiveDiagnostics();
+    await this.captureRetrospectiveDiagnostics(lastOutput);
     throw new Error(
       `memory retrospective for ${conversationId} did not complete after ${maxAttempts} attempts: ${lastOutput.slice(0, 400)}`,
     );
@@ -822,7 +822,9 @@ export class VellumAgent implements BaseAgent {
    * retrospective can be attributed to config vs. model behavior from
    * the artifacts alone, after the container is gone.
    */
-  private async captureRetrospectiveDiagnostics(): Promise<void> {
+  private async captureRetrospectiveDiagnostics(
+    retrospectiveOutput = "",
+  ): Promise<void> {
     // One file PER probe. `CommandRunner`'s `logPath` overwrites rather
     // than appends, so three probes sharing one path silently left only
     // the last — which is exactly how the memory-config extract went
@@ -887,6 +889,35 @@ export class VellumAgent implements BaseAgent {
           logPath: diagLog("migrations-checkpoint"),
           logStep: "migrations-checkpoint",
         },
+      )
+      .catch(() => undefined);
+    // The retrospective's own transcript. When it declines to author a
+    // skill it still SAYS something — one content block, zero tool calls,
+    // and no record of the reasoning once the container is retired. That
+    // transcript is what distinguishes "the model considered the
+    // procedure and judged it not worth keeping" from "it never saw a
+    // procedure" or "it had no authoring tools", and it settled exactly
+    // this question when read off a real managed assistant. The fork id
+    // is already in the run's own JSON output.
+    const forkId = retrospectiveOutput.match(
+      /"backgroundConversationId"\s*:\s*"([0-9a-f-]+)"/,
+    )?.[1];
+    if (forkId === undefined) return;
+    await this.runner
+      .run(
+        this.cliCommand,
+        [
+          "exec",
+          this.id,
+          "--",
+          "assistant",
+          "conversations",
+          "export",
+          forkId,
+          "--format",
+          "md",
+        ],
+        { logPath: diagLog("fork"), logStep: "retrospective-fork" },
       )
       .catch(() => undefined);
   }

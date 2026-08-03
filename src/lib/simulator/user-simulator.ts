@@ -334,6 +334,22 @@ export class UserSimulator implements Simulator {
         reason: `max simulator turns reached (${this.maxTurns})`,
       };
     }
+
+    // A scripted opener is a fixed string, not a judgement call — send it
+    // without a model round-trip so the stimulus every metric is graded
+    // against is identical on every run.
+    if (input.isPhaseOpener === true) {
+      const opener = scriptedOpener(
+        await readFile(input.test.specPath, "utf8"),
+      );
+      if (opener !== undefined) {
+        return {
+          action: "send",
+          message: { content: opener },
+          reason: "scripted SPEC opener",
+        };
+      }
+    }
     return this.decideNextMessage(input);
   }
 
@@ -481,4 +497,55 @@ export class UserSimulator implements Simulator {
 export function simulatorVisibleSpec(spec: string): string {
   const cut = spec.search(/^## (?:Fixtures|Success criteria)\b/m);
   return cut === -1 ? spec : spec.slice(0, cut).trimEnd() + "\n";
+}
+
+/** The cue line 16 of 17 SPECs already use to introduce their opener. */
+const VERBATIM_OPENER_CUE =
+  /^Open the conversation with this message, verbatim:\s*$/m;
+
+/**
+ * The scripted first user message of a phase, or `undefined` when the SPEC
+ * doesn't script one.
+ *
+ * A SPEC that says "verbatim" means it; routing that turn through the
+ * simulator model asks it to reproduce a fixed string and hopes. It
+ * usually does — and then doesn't. In one procedural-memory run the
+ * phase-2 opener went out as "I need to send the opening message as
+ * specified in the SPEC. Let me start fresh:" followed by the real text,
+ * which both breaks the fiction and tells the agent under test that a
+ * SPEC exists. Reading the string straight out of the SPEC removes the
+ * model from a turn that never had a decision in it.
+ *
+ * The opener is the blockquote immediately following the cue line; quote
+ * markers are stripped and wrapped lines rejoined, so SPEC authors keep
+ * writing openers exactly as they do today.
+ *
+ * Exported for unit tests.
+ */
+export function scriptedOpener(spec: string): string | undefined {
+  const cue = spec.match(VERBATIM_OPENER_CUE);
+  if (cue?.index === undefined) return undefined;
+
+  const lines = spec.slice(cue.index + cue[0].length).split("\n");
+  const quoted: string[] = [];
+  for (const line of lines) {
+    if (line.trim() === "") {
+      // Blank lines before the quote are layout; after it, the end.
+      if (quoted.length === 0) continue;
+      break;
+    }
+    if (!line.startsWith(">")) break;
+    quoted.push(line.replace(/^>\s?/, "").trim());
+  }
+
+  // A SPEC carrying the cue but no quote is an authoring error. Falling
+  // back to the model here would restore exactly the nondeterminism this
+  // exists to remove, and do it silently.
+  if (quoted.length === 0) {
+    throw new Error(
+      'SPEC says "Open the conversation with this message, verbatim:" but no ' +
+        "blockquote follows it — the scripted opener cannot be read.",
+    );
+  }
+  return quoted.join(" ");
 }

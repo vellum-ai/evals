@@ -567,6 +567,10 @@ export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
         });
       }
 
+      // Each phase opens with its SPEC's scripted message. Tracked per
+      // phase rather than derived from the transcript, which by phase 2
+      // already holds phase 1's turns.
+      let isPhaseOpener = true;
       for (;;) {
         const simulatorTurns = (await readTranscript(input.runId)).filter(
           (turn) => turn.role === "simulator",
@@ -584,7 +588,9 @@ export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
         const decision = await simulator.decide({
           test: phaseTest,
           transcript: await readTranscript(input.runId),
+          isPhaseOpener,
         });
+        isPhaseOpener = false;
         if (decision.action === "end") {
           progress({
             step: "simulator",

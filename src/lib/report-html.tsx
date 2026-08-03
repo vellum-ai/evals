@@ -665,6 +665,10 @@ pre.log { max-height: 480px; overflow: auto; padding: 16px; border-radius: 16px;
 .phase-ingest { background: #22d3ee; }
 .phase-switch { background: #ec4899; }
 .phase-question { background: #a78bfa; }
+.phase-conversation { background: #a78bfa; }
+.phase-phase-1 { background: #a78bfa; }
+.phase-between-phases { background: #ec4899; }
+.phase-phase-2 { background: #c4b5fd; }
 .phase-grading { background: #34d399; }
 .phase-teardown { background: #64748b; }
 .phase-timing-labels { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
@@ -2381,13 +2385,31 @@ function ExecutionTabs({ run }: { run: ReportRunDetail }) {
  * user can see where time was spent — especially when a run takes 5+ minutes
  * and it's not clear whether the ingest or the question turn dominated.
  */
+/**
+ * CSS class suffix for a phase label. Multi-word labels ("Between
+ * phases") must collapse to a single token — `phase-between phases`
+ * would parse as two class names and lose the segment's color.
+ */
+function phaseClass(label: string): string {
+  return `phase-${label.toLowerCase().replace(/\s+/g, "-")}`;
+}
+
 function PhaseTiming({ run }: { run: ReportRunDetail }) {
   // Derive phase spans from progress events.
   const setupStart = run.progressEvents.find(
     (e) => e.step === "setup" && e.status === "start",
   )?.emittedAt;
-  const setupEnd = run.progressEvents.find(
-    (e) => e.step === "setup" && e.status === "done",
+  // LAST setup:done — the runner emits one per setup command, so taking
+  // the first would clip a multi-command setup (11 staged files on the
+  // procedure-reuse tests) down to just its opening step.
+  const setupEnd = run.progressEvents
+    .filter((e) => e.step === "setup" && e.status === "done" && e.emittedAt)
+    .at(-1)?.emittedAt;
+  const hatchStart = run.progressEvents.find(
+    (e) => e.step === "hatch" && e.status === "start",
+  )?.emittedAt;
+  const hatchEnd = run.progressEvents.find(
+    (e) => e.step === "hatch" && e.status === "done",
   )?.emittedAt;
   const sendStart = run.progressEvents.find(
     (e) => e.step === "send" && e.status === "start",
@@ -2458,34 +2480,63 @@ function PhaseTiming({ run }: { run: ReportRunDetail }) {
   }
 
   // Break down the gaps between labeled phases into named segments so the
-  // bar tiles to the real total without a mystery "Other" slice. The three
-  // gaps that matter on a LongMemEval-V2 run:
+  // bar tiles to the real total without a mystery "Other" slice.
   //
-  //   Hatch — setup end to first ingest event. Includes Docker container
-  //   startup, capability checks, and workspace file writes. Can be minutes
-  //   on a cold container pull.
-  //
-  //   Conv switch — last ingest event to first question event. The
-  //   newConversation() call plus event-stream respawn.
+  //   Hatch — the runner's own hatch step: container startup, readiness
+  //   probes, image pulls. Measured from the `hatch` progress events
+  //   rather than inferred from a gap. It used to be derived as "setup end
+  //   → first ingest event", which on any run without an ingest stream
+  //   (every personal-intelligence test) produced an em-dash and silently
+  //   dropped one to two minutes of container startup from the bar while
+  //   that time still counted toward the total — the reason the segments
+  //   never summed to the wall clock. Hatch also runs BEFORE setup, so it
+  //   is rendered first.
   //
   //   Teardown — last question/grading event to run completion. Agent
   //   shutdown, container retirement, and final metadata write.
   const wallClockMs = span(run.startedAt, run.completedAt);
-  const hatchMs = span(setupEnd, ingestFirst);
-  const convSwitchMs = span(ingestLast, questionFirst);
+  const hatchMs = span(hatchStart ?? run.startedAt, hatchEnd);
   const teardownStart =
     metricsEnd ?? questionLast ?? sendEnd ?? run.completedAt;
   const teardownMs = span(teardownStart, run.completedAt);
 
+  // Multi-phase tests (SPEC.phase2.md + between-phases.ts) execute their
+  // between-phase directives — forcing a background memory pass, rotating
+  // to a fresh conversation — in the middle of the assistant-event window,
+  // emitting `phase` progress events around them. Splitting on those keeps
+  // that work visible instead of burying it inside one opaque span.
+  const phaseSteps = run.progressEvents.filter((e) => e.step === "phase");
+  const betweenStart = phaseSteps.find((e) => e.status === "start")?.emittedAt;
+  const betweenEnd = phaseSteps
+    .filter((e) => e.status === "done" && e.emittedAt)
+    .at(-1)?.emittedAt;
+
   const phases: { label: string; ms: number | undefined }[] = [
-    { label: "Setup", ms: setupMs },
     { label: "Hatch", ms: hatchMs },
-    { label: "Ingest", ms: ingestMs },
-    { label: "Switch", ms: convSwitchMs },
-    { label: "Question", ms: questionMs },
+    { label: "Setup", ms: setupMs },
+  ];
+  if (ingestMs !== undefined) {
+    // LongMemEval-V2 shape: haystack ingest turn, conversation rotation,
+    // then the question turn.
+    phases.push(
+      { label: "Ingest", ms: ingestMs },
+      { label: "Switch", ms: span(ingestLast, questionFirst) },
+      { label: "Question", ms: questionMs },
+    );
+  } else if (betweenStart !== undefined && betweenEnd !== undefined) {
+    // Multi-phase conversation shape.
+    phases.push(
+      { label: "Phase 1", ms: span(questionFirst, betweenStart) },
+      { label: "Between phases", ms: span(betweenStart, betweenEnd) },
+      { label: "Phase 2", ms: span(betweenEnd, questionLast) },
+    );
+  } else {
+    phases.push({ label: "Conversation", ms: questionMs });
+  }
+  phases.push(
     { label: "Grading", ms: metricsMs },
     { label: "Teardown", ms: teardownMs },
-  ];
+  );
   // Total wall-clock from run start to completion. Falls back to summing
   // the phase durations only when run timestamps are unavailable.
   const phaseSumMs = phases.reduce((sum, p) => sum + (p.ms ?? 0), 0);
@@ -2501,7 +2552,7 @@ function PhaseTiming({ run }: { run: ReportRunDetail }) {
           return (
             <div
               key={phase.label}
-              className={`phase-bar-segment phase-${phase.label.toLowerCase()}`}
+              className={`phase-bar-segment ${phaseClass(phase.label)}`}
               style={{ width: `${pct}%` }}
               title={`${phase.label}: ${formatDuration(phase.ms)}`}
             />
@@ -2511,7 +2562,7 @@ function PhaseTiming({ run }: { run: ReportRunDetail }) {
       <div className="phase-timing-labels">
         {phases.map((phase) => (
           <span key={phase.label} className="phase-timing-item">
-            <span className={`phase-dot phase-${phase.label.toLowerCase()}`} />
+            <span className={`phase-dot ${phaseClass(phase.label)}`} />
             {phase.label}
             <strong>{formatDuration(phase.ms)}</strong>
           </span>

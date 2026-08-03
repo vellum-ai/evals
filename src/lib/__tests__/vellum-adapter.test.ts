@@ -5,7 +5,11 @@ import { join, resolve } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import type { AgentEvent } from "../adapter";
-import { VellumAgent, normalizeVellumEventStream } from "../adapters/vellum";
+import {
+  VellumAgent,
+  normalizeVellumEventStream,
+  retrospectiveReplyPresent,
+} from "../adapters/vellum";
 import {
   DEFAULT_EMBEDDING_ALLOW_HOSTS,
   DEFAULT_PLUGIN_INSTALL_ALLOW_HOSTS,
@@ -58,6 +62,8 @@ class FakeRunner implements CommandRunner {
   readonly process = new FakeProcess();
   /** Stands in for the retrospective's `--json` line when a test needs it. */
   retrospectiveStdout?: string;
+  /** Successive stdout values for `conversations export`, consumed in order. */
+  exportStdouts?: string[];
 
   async run(
     command: string,
@@ -70,6 +76,13 @@ class FakeRunner implements CommandRunner {
       args.join(" ").includes("memory retrospective run")
     ) {
       return { exitCode: 0, stdout: this.retrospectiveStdout, stderr: "" };
+    }
+    if (
+      this.exportStdouts !== undefined &&
+      args.join(" ").includes("conversations export")
+    ) {
+      const next = this.exportStdouts.shift() ?? "";
+      return { exitCode: 0, stdout: next, stderr: "" };
     }
     // Two call shapes invoke `assistant conversations new` in the
     // adapter:
@@ -1504,6 +1517,40 @@ describe("triggerRetrospective diagnostics", () => {
     );
   });
 
+  test("re-exports until the retrospective's own reply has landed", async () => {
+    // The export races the fork's message persistence: `retrospective run`
+    // returns when the job reports done, but the reply hits the DB a beat
+    // later. Observed locally — the daemon logged contentBlocks: 2 while
+    // the export still ended at the instruction prompt, losing the text.
+    const instructionOnly =
+      "# Retro\n\n## You\n\npublish ep18\n\n## Assistant\n\ndone\n\n## You\n\nThis is an automated background memory pass...\n";
+    const withReply = `${instructionOnly}\n## Assistant\n\nNothing new to save.\n`;
+    const runner = new FakeRunner();
+    runner.retrospectiveStdout = JSON.stringify({
+      kind: "invoked",
+      backgroundConversationId: "019fc948-c4c4-7549-9afd-0d1e4ee5faf3",
+    });
+    runner.exportStdouts = [instructionOnly, instructionOnly, withReply];
+    const agent = new VellumAgent({
+      runner,
+      cliCommand: "vellum",
+      profile,
+      testId: "podcast-publish-procedural-memory",
+      runId: "eval-run-fork-race",
+      processEnv: {},
+    });
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
+
+    await agent.triggerRetrospective!();
+
+    expect(
+      runner.runs.filter((r) =>
+        r.args.join(" ").includes("conversations export"),
+      ).length,
+    ).toBe(3);
+  });
+
   test("skips the fork export when no fork id was reported", async () => {
     // `disabled` / `no_new_messages` outcomes carry no fork; exporting a
     // parsed-out fragment of the wrong string would write a confusing
@@ -1528,5 +1575,28 @@ describe("triggerRetrospective diagnostics", () => {
         r.args.join(" ").includes("conversations export"),
       ),
     ).toBe(false);
+  });
+});
+
+describe("retrospectiveReplyPresent", () => {
+  test("false while the transcript still ends on the instruction message", () => {
+    // Exactly the shape both local arms captured: the injected pass
+    // instruction is the last turn, so the reply had not landed yet.
+    const midWrite =
+      "## You\n\npublish\n\n## Assistant\n\ndone\n\n## You\n\nThis is an automated background memory pass over the conversation above\n";
+    expect(retrospectiveReplyPresent(midWrite)).toBe(false);
+  });
+
+  test("true once an assistant turn follows the instruction", () => {
+    const complete =
+      "## You\n\npublish\n\n## Assistant\n\ndone\n\n## You\n\nautomated pass\n\n## Assistant\n\nNothing new to save.\n";
+    expect(retrospectiveReplyPresent(complete)).toBe(true);
+  });
+
+  test("an assistant turn BEFORE the instruction does not count", () => {
+    // The phase-1 reply is always present; keying on its existence would
+    // make every mid-write export look complete.
+    const decoy = "## Assistant\n\ndone\n\n## You\n\nautomated pass\n";
+    expect(retrospectiveReplyPresent(decoy)).toBe(false);
   });
 });

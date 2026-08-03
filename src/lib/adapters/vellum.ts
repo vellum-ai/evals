@@ -206,6 +206,25 @@ function parseConversationKey(output: string): string | null {
 const CONTAINER_WORKSPACE_DIR = "/workspace";
 
 /**
+ * True when an exported retrospective-fork transcript already carries the
+ * retrospective's own reply: an `## Assistant` turn positioned after the
+ * last `## You` turn (the injected instruction message).
+ *
+ * A transcript that still ends on the instruction was read mid-write —
+ * `retrospective run` returns when the job reports done, but the reply
+ * lands in the DB a beat afterwards. That window is narrow enough that a
+ * hosted run captured the reply and a local one, ~1s faster, did not,
+ * silently dropping the exact text the artifact exists to preserve.
+ *
+ * Exported for unit tests.
+ */
+export function retrospectiveReplyPresent(transcript: string): boolean {
+  const lastUser = transcript.lastIndexOf("\n## You");
+  if (lastUser === -1) return transcript.includes("\n## Assistant");
+  return transcript.indexOf("\n## Assistant", lastUser) !== -1;
+}
+
+/**
  * Directory inside the assistant container where the app builder writes
  * compiled sandbox apps: `<dirName>/dist/index.html` plus sibling
  * `main.js` / `main.css`. Derived from the daemon's app-store layout
@@ -903,23 +922,35 @@ export class VellumAgent implements BaseAgent {
       /"backgroundConversationId"\s*:\s*"([0-9a-f-]+)"/,
     )?.[1];
     if (forkId === undefined) return;
-    await this.runner
-      .run(
-        this.cliCommand,
-        [
-          "exec",
-          this.id,
-          "--",
-          "assistant",
-          "conversations",
-          "export",
-          forkId,
-          "--format",
-          "md",
-        ],
-        { logPath: diagLog("fork"), logStep: "retrospective-fork" },
-      )
-      .catch(() => undefined);
+    // The export races the fork's own message persistence. `retrospective
+    // run` returns once the job reports done, but the reply lands in the
+    // DB a beat later — observed locally with a ~1s gap, where the daemon
+    // logged `contentBlocks: 2` and the export still ended at the
+    // instruction prompt, losing the exact text this artifact exists to
+    // capture. A hosted run's wider gap hid it. Retry until the transcript
+    // ends in an assistant turn rather than the instruction message.
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const result = await this.runner
+        .run(
+          this.cliCommand,
+          [
+            "exec",
+            this.id,
+            "--",
+            "assistant",
+            "conversations",
+            "export",
+            forkId,
+            "--format",
+            "md",
+          ],
+          { logPath: diagLog("fork"), logStep: "retrospective-fork" },
+        )
+        .catch(() => undefined);
+      if (result === undefined) return;
+      if (retrospectiveReplyPresent(result.stdout) || attempt === 5) return;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
   }
 
   events(): AsyncIterable<AgentEvent> {

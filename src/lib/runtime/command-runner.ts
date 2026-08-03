@@ -39,6 +39,11 @@ export interface RunOptions {
    * Best-effort: log-file write failures never interrupt the run or
    * mutate the returned `CommandResult`.
    */
+  /**
+   * File to write this subprocess's captured output to. NOTE: the file is
+   * OVERWRITTEN, not appended — two calls sharing one `logPath` leave only
+   * the last one's output. Give each call its own path.
+   */
   logPath?: string;
   /**
    * Label embedded in the `[step]` slot of each line in the on-disk log.

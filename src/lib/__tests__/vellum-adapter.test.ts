@@ -1422,3 +1422,41 @@ describe("normalizeVellumEventStream", () => {
     expect(out[1]?.message.text).toBeUndefined();
   });
 });
+
+describe("triggerRetrospective diagnostics", () => {
+  test("every probe writes to its own log file", async () => {
+    // GIVEN a hatched agent
+    const runner = new FakeRunner();
+    const agent = new VellumAgent({
+      runner,
+      cliCommand: "vellum",
+      profile,
+      testId: "podcast-publish-procedural-memory",
+      runId: "eval-run-diag",
+      processEnv: {},
+    });
+    await preStageRecordingCa(agent.id);
+    await agent.hatch();
+
+    // WHEN the retrospective directive runs
+    await agent.triggerRetrospective!();
+
+    // THEN each diagnostic probe has a distinct logPath. `CommandRunner`
+    // OVERWRITES logPath rather than appending, so probes sharing one path
+    // silently leave only the last — which is how a hosted run's
+    // memory-config extract went missing while the checkpoint survived.
+    const diagPaths = runner.runs
+      .map((r) => r.opts?.logPath)
+      .filter((p): p is string => typeof p === "string")
+      .filter((p) => p.includes("subprocess-retrospective"));
+
+    expect(diagPaths.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(diagPaths).size).toBe(diagPaths.length);
+    expect(diagPaths.some((p) => p.endsWith("-memory-config.log"))).toBe(true);
+    expect(
+      diagPaths.some((p) => p.endsWith("-migrations-checkpoint.log")),
+    ).toBe(true);
+    expect(diagPaths.some((p) => p.endsWith("-state.log"))).toBe(true);
+    expect(diagPaths.some((p) => /-attempt-\d+\.log$/.test(p))).toBe(true);
+  });
+});

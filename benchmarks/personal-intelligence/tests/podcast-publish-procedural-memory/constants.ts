@@ -15,6 +15,14 @@ export const EP19_SHOWNOTES_PATH = "shownotes/ep019.md";
 export const FEED_WORKSPACE_PATH = "feed.xml";
 
 /**
+ * Success line the script prints for episode 18 — the PHASE 1 chore. Its
+ * presence in a phase-1 tool result is what proves a procedure actually
+ * happened for the retrospective to capture.
+ */
+export const PHASE1_SCRIPT_SUCCESS_STDOUT =
+  "wrote shownotes/ep018.md and feed entry stackedpods-ep-018";
+
+/**
  * Success line the script prints to stdout for episode 19. Never appears
  * in its output files, so seeing it in a tool result proves execution.
  */

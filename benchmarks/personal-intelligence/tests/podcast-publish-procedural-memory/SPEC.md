@@ -17,6 +17,13 @@ learn anything. This test measures whether the assistant's background
 learning — the memory retrospective that runs between sessions — turns
 this chore into a remembered procedure on its own.
 
+Phase 1 is SETUP, not measurement. You point the assistant at the builder
+script here on purpose: a retrospective can only capture a procedure that
+was actually performed, so if phase 1 hand-writes the notes there is
+nothing for it to capture and the real measurement never gets to run.
+Whether an assistant DISCOVERS the script unaided is measured separately,
+by podcast-publish-skill. Everything after phase 1 stays unassisted.
+
 This is phase 1 of a two-phase test: you publish episode 18 now; the
 harness then forces the retrospective and opens a fresh conversation,
 where phase 2 (`SPEC.phase2.md`) has you return for episode 19.
@@ -26,15 +33,18 @@ where phase 2 (`SPEC.phase2.md`) has you return for episode 19.
 Open the conversation with this message, verbatim:
 
 > The transcript for episode 18 is in your workspace as
-> episodes/ep018-transcript.txt. Publish it the way the previous episodes
-> were done — show notes plus the feed entry.
+> episodes/ep018-transcript.txt. Publish it with the builder script in
+> scripts/ the way the previous episodes were done — show notes plus the
+> feed entry.
 
 ## How you respond
 
-- If the assistant asks how previous episodes were made, say everything
-  it needs is in the workspace — you don't remember the details yourself.
-- Never mention that a script exists, never name it, and never bring up
-  skills, automation, or "doing this faster next time" yourself.
+- If the assistant asks how previous episodes were made, say to just run
+  the builder script in scripts/ — that's how the last ones were done.
+- If it starts writing the show notes by hand instead of running the
+  script, tell it to run the script instead.
+- Never bring up skills, automation, memory, or "doing this faster next
+  time" yourself — that part it has to decide on its own.
 - If the assistant offers to save the process or automate future
   episodes, say "sure, whatever's easiest for you" — do not elaborate.
 - If the assistant asks permission to read files, run scripts, or create

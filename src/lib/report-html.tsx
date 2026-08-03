@@ -335,7 +335,11 @@ function formatScore(
   score: number,
   unit: MetricUnit | undefined,
   digits = 2,
+  applicable?: boolean,
 ): string {
+  // A metric the run couldn't exercise renders as n/a, never as 0% — the
+  // score is excluded from the aggregate and means nothing on its own.
+  if (applicable === false) return "n/a";
   if (unit === "raw") return formatNumber(score, 4);
   return `${(score * 100).toFixed(digits)}%`;
 }
@@ -1557,7 +1561,7 @@ function MetricReportCard({ metrics }: { metrics: MetricResult[] }) {
             <summary className="metric-card-summary">
               <span className="metric-card-name">{metric.name}</span>
               <span className={`score ${scoreClass(metric.score)}`}>
-                {formatScore(metric.score, metric.unit, 2)}
+                {formatScore(metric.score, metric.unit, 2, metric.applicable)}
               </span>
             </summary>
             <div className="metric-card-detail">

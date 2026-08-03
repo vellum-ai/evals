@@ -2,13 +2,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
+import { readAssistantEvents } from "../../../../../src/lib/metrics";
+import { hasExecutionResultEvidence } from "../../../../../src/lib/common-metrics/script-reuse";
 import {
   AssistantContainerUnavailableError,
   listManagedSkills,
   type ManagedSkillInspection,
 } from "../../../../../src/lib/vellum-artifacts";
 import { containsScriptInvocation } from "../../../../../src/lib/common-metrics/script-reuse";
-import { SCRIPT_FILENAME } from "../constants";
+import { PHASE1_SCRIPT_SUCCESS_STDOUT, SCRIPT_FILENAME } from "../constants";
 
 const METRIC_NAME = "proactive-skill-capture";
 
@@ -55,6 +57,28 @@ function isProactivelyAuthored(skill: ManagedSkillInspection): boolean {
 export default async function scoreProactiveSkillCapture(
   input: MetricInput,
 ): Promise<MetricResult> {
+  // Precondition: phase 1 must actually have PERFORMED the procedure. A
+  // retrospective can only capture what was done, so a phase 1 that
+  // hand-wrote the deliverable leaves nothing to capture and makes this
+  // metric unmeasurable — not failed. Verified against a real assistant:
+  // its subagent ran the script, and its retrospective then captured the
+  // procedure faithfully (copy_from and all); our runs hand-wrote every
+  // time and captured nothing. Scoring that 0 reported a test-setup gap
+  // as a product failure.
+  const phase1Events = await readAssistantEvents(input.runId);
+  if (!hasExecutionResultEvidence(phase1Events, PHASE1_SCRIPT_SUCCESS_STDOUT)) {
+    return {
+      name: METRIC_NAME,
+      score: 0,
+      applicable: false,
+      reason:
+        `Not applicable: phase 1 never executed ${SCRIPT_FILENAME}, so no ` +
+        "procedure was performed for the retrospective to capture. Re-run; if " +
+        "this persists, phase 1's setup is failing rather than the agent's memory.",
+      metadata: { phase1ExecutedScript: false },
+    };
+  }
+
   let skills: ManagedSkillInspection[];
   try {
     skills = await listManagedSkills(input.runId);

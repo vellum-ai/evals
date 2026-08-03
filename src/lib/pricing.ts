@@ -135,6 +135,14 @@ const PRICING_TABLE: Record<string, ModelRow> = {
     outputPer1M: 1.2,
     cacheReadPer1M: 0.06,
   },
+  // What a managed platform assistant's `cost-optimized` profile resolves
+  // to — and therefore the model behind memoryRetrospective, memoryRouter,
+  // and every other speed-tier call site in `vellum-v3-latest`.
+  "fireworks:deepseek-v4-flash": {
+    inputPer1M: 0.14,
+    outputPer1M: 0.28,
+    cacheReadPer1M: 0.03,
+  },
 };
 
 /**

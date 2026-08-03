@@ -1,9 +1,0 @@
-{
-  "species": "vellum",
-  "description": "TEMPORARY. Identical to vellum-default except it forces memory.v3.live=true after hatch. Fresh workspaces are supposed to boot v3-live via workspace migration 105, but the first-launch config seed persists live=false ~200ms before migrations run, and 105 defers to any existing value — so every hatched assistant silently runs memory v2. That blocks the v3-gated machinery the procedural-memory test measures (retrospective skill authoring). Use this profile instead of vellum-default when a test depends on memory v3. DELETE once vellum-assistant#39847 ships in the published images this harness hatches; vellum-default is correct again at that point.",
-  "setup": ["assistant config set memory.v3.live true"],
-  "branding": {
-    "color": "#2E9A4E",
-    "logo": "<svg viewBox=\"43 45 89.2 92.1\" xmlns=\"http://www.w3.org/2000/svg\"><path fill=\"currentColor\" d=\"M65.2927 45L87.5854 93.3893L109.79 45H132.171L87.4084 137.09L43 45H65.2927Z\"/></svg>"
-  }
-}

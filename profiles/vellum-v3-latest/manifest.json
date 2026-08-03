@@ -5,7 +5,7 @@
     "assistant config set memory.v3.live true",
     "assistant keys set fireworks \"$FIREWORKS_API_KEY\"",
     "assistant inference providers connections create fireworks-personal --provider fireworks --auth api_key --credential credential/fireworks/api_key",
-    "assistant inference profiles create prod-speed --provider fireworks --model accounts/fireworks/models/deepseek-v4-flash --connection fireworks-personal --effort none --max-tokens 8192 --thinking false --label \"Prod Speed\"",
+    "assistant inference profiles create prod-speed --provider fireworks --model accounts/fireworks/models/deepseek-v4-flash --connection fireworks-personal --effort none --max-tokens 8192 --thinking off --label \"Prod Speed\"",
     "assistant config set llm.callSites.approvalConversation.profile prod-speed",
     "assistant config set llm.callSites.approvalCopy.profile prod-speed",
     "assistant config set llm.callSites.commitMessage.profile prod-speed",

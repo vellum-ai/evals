@@ -1,0 +1,5 @@
+sample_id,reagent,volume,unit
+S-001,EDTA,275,uL
+S-002,SDS,150,uL
+S-003,Glycerol,250,uL
+S-004,Tris-HCl,125,uL

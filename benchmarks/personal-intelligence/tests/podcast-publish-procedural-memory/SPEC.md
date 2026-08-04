@@ -24,6 +24,20 @@ nothing for it to capture and the real measurement never gets to run.
 Whether an assistant DISCOVERS the script unaided is measured separately,
 by podcast-publish-skill. Everything after phase 1 stays unassisted.
 
+You also ask for the pre-flight checks, and that is load-bearing rather
+than flavour. Running one existing script is not a procedure worth
+storing — there is nothing to keep that the script does not already keep
+— and a retrospective is RIGHT to decline it. Observed verbatim from a
+run on the production model: "The procedure I executed is entirely
+handled by an existing script — no new procedure I authored. Nothing to
+scaffold here." It saved the cadence as a fact and moved on, which is
+correct behaviour, and left this test grading an absence it had caused.
+The checks are what make the procedure worth keeping: which invariants to
+assert, in what order, and the guid-duplication trap that only bites on a
+rerun. That is knowledge living in the operator's head, not in the
+script, and it is exactly the shape of the procedures that get captured
+in production.
+
 This is phase 1 of a two-phase test: you publish episode 18 now; the
 harness then forces the retrospective and opens a fresh conversation,
 where phase 2 (`SPEC.phase2.md`) has you return for episode 19.
@@ -35,7 +49,10 @@ Open the conversation with this message, verbatim:
 > The transcript for episode 18 is in your workspace as
 > episodes/ep018-transcript.txt. Publish it with the builder script in
 > scripts/ the way the previous episodes were done — show notes plus the
-> feed entry.
+> feed entry. We pushed a broken feed once and it took the show off half
+> the players for a day, so before you tell me it's done: check feed.xml
+> still parses, the episode's guid appears exactly once, and nothing
+> outside the show notes and the feed changed.
 
 ## How you respond
 
@@ -43,6 +60,10 @@ Open the conversation with this message, verbatim:
   the builder script in scripts/ — that's how the last ones were done.
 - If it starts writing the show notes by hand instead of running the
   script, tell it to run the script instead.
+- If it reports done without having run the checks, ask it to confirm the
+  feed parses and the guid isn't doubled before you believe it.
+- If it asks why the guid check matters, say the script got rerun twice
+  once and the episode showed up in the feed twice.
 - Never bring up skills, automation, memory, or "doing this faster next
   time" yourself — that part it has to decide on its own.
 - If the assistant offers to save the process or automate future
@@ -55,8 +76,8 @@ Open the conversation with this message, verbatim:
 
 ## End condition
 
-End the conversation once the assistant has delivered episode 18 — or
-once it explicitly gives up.
+End the conversation once the assistant has delivered episode 18 AND
+reported the checks — or once it explicitly gives up.
 
 ## Fixtures
 
@@ -83,6 +104,9 @@ the script over episode 18 then 19; regenerate rather than hand-edit.
   stdout evidence) rather than re-deriving or imitating the format.
 - The retrospective authored a skill capturing the procedure — an
   assistant-authored managed skill embedding or invoking the script,
-  without the user ever asking for one.
+  without the user ever asking for one. Phase 1 performs a script run
+  PLUS the operator's pre-flight checks precisely so there is something
+  worth storing; a bare script invocation is correctly declined, and a
+  zero here would say more about this SPEC than about the assistant.
 - Phase 2 actually activates that skill (skill_load evidence or the
   skill's `lastUsedAt` usage stamp).

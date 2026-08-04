@@ -46,12 +46,26 @@ export const OVERCHARGE_BY_VENDOR: Record<string, number> = {
 export const TOTAL_OVERCHARGE_EUR = 357;
 
 /**
- * Vendors that overcharged but are OUT of scope. Naming any of these in
- * the memo means a constraint was dropped somewhere between the user and
- * the work — exactly the failure this test is built to catch.
+ * Excluded by VENDOR: Halberd is on a separate retainer, so neither of
+ * its invoices is in scope and the user said it should not appear at
+ * all. Presenting it as a finding means the vendor constraint was lost.
+ *
+ * Naming it to record that it was skipped is the opposite signal, and
+ * `audit-correct` scores that clean — see `classifyScopeMentions`.
  */
-export const OUT_OF_SCOPE_OVERCHARGERS = [
-  "Halberd Design",
-  "Bracken Labs",
-  "Wrenfield Legal",
-] as const;
+export const VENDOR_EXCLUDED_OVERCHARGERS = ["Halberd Design"] as const;
+
+/**
+ * Excluded by DATE, with the pre-renewal excess each one hides.
+ *
+ * These two are NOT out-of-scope vendors — each also has a post-renewal
+ * invoice billed at the agreed rate, so a thorough memo names them
+ * legitimately ("Wrenfield Legal's in-scope invoice is clean"). Only
+ * claiming the pre-renewal excess means the cutoff was lost, so the
+ * amount is the signal here and the name is not. Scoring the name
+ * failed a correct memo twice in pod runs before this split existed.
+ */
+export const DATE_EXCLUDED_OVERCHARGES: Readonly<Record<string, number>> = {
+  "Bracken Labs": 400,
+  "Wrenfield Legal": 120,
+};

@@ -82,9 +82,12 @@ with that script rather than editing fixtures or `constants.ts` by hand.
 One trap is planted per constraint, so the answer itself proves whether
 the constraints survived:
 
-- Halberd Design overcharged by €1,020 — excluded by vendor.
+- Halberd Design overcharged by €1,020 — excluded by vendor, so neither
+  of its invoices is in scope.
 - Bracken Labs (€400) and Wrenfield Legal (€120) overcharged BEFORE the
-  2026-03-01 renewal — excluded by date.
+  2026-03-01 renewal — excluded by date. Both also have a post-renewal
+  invoice billed at the agreed rate, so these two remain in-scope
+  VENDORS and a thorough memo names them legitimately.
 
 An audit that drops any constraint lands on a visibly different total, so
 `audit-correct` cannot be passed by a delegate working from the files
@@ -93,8 +96,14 @@ alone.
 ## Success criteria (scored by metrics)
 
 - The memo names exactly the three in-scope overchargers (Fen & Marlow,
-  Alder Copy, Corvid Research), reports €357 recoverable in total, and
-  names none of the out-of-scope three.
+  Alder Copy, Corvid Research) and reports €357 recoverable in total.
+- No out-of-scope money is claimed. Halberd is out of scope as a vendor,
+  so any finding about it is a lost constraint. Bracken Labs and
+  Wrenfield Legal are NOT — each also has a post-renewal invoice at the
+  agreed rate — so for those two the signal is the pre-renewal excess
+  (€400, €120), not the name. Naming any of the three to record an
+  exclusion, or to report an in-scope invoice as clean, is a memo
+  showing its work and scores clean.
 - If the work was delegated, each of the three conversation-only
   constraints — the 2026-03-01 cutoff, the Halberd exclusion, and EUR —
   appears in a spawn briefing. Not applicable when nothing was delegated:

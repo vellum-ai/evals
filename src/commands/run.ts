@@ -555,7 +555,41 @@ export function registerRunCommand(program: Command): void {
           console.log(`Evals report server listening on ${url}`);
           console.log(`Opening ${sessionUrl}`);
           openInBrowser(sessionUrl);
+          return;
         }
+
+        // Everything this command owns is now awaited and on disk: the
+        // runners flushed their progress chains before `benchmark.run`
+        // resolved, metadata and metric results are written, the event
+        // bridge settled, and the session bundle either published or
+        // declined to. But the process still does not exit on its own —
+        // a run leaves a live handle behind (in a pod: one ESTABLISHED
+        // socket to api.anthropic.com from the simulator's own fetch,
+        // with every container already reaped and no children left), and
+        // Bun keeps the loop alive for it. On a laptop that is a stuck
+        // prompt; under the K8s launcher it is a Job that never
+        // terminates after a green run.
+        //
+        // There is nothing in userland to close: at this point
+        // `process.getActiveResourcesInfo()` returns `[]` — no timer, no
+        // socket, no child process that JS can see — while the process
+        // still refuses to exit. Whatever holds it lives inside Bun (the
+        // fetch connection pool is the visible suspect; a standalone
+        // script doing the same fetch exits fine, so size or lifetime of
+        // the process matters too). That rules out "find the leak and
+        // close it" as a fix and leaves exiting explicitly, preserving
+        // the code the failure paths set.
+        //
+        // `EVALS_DEBUG_HANDLES=1` prints the resource list before
+        // exiting. It reported `[]` when this was written; if a future
+        // Bun starts surfacing the holder, this is where it will show up
+        // and a targeted close becomes possible.
+        if (process.env.EVALS_DEBUG_HANDLES) {
+          console.log(
+            `[handles] still active at exit: ${JSON.stringify(process.getActiveResourcesInfo())}`,
+          );
+        }
+        process.exit(process.exitCode ?? 0);
       },
     );
 }

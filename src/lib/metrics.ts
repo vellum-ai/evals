@@ -6,7 +6,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, extname, join } from "node:path";
 
 import type { AgentEvent, AgentMessage } from "./adapter";
 import type { ProfileManifest } from "./profile";
@@ -569,14 +569,33 @@ export async function runMetricFile(
   return scorer(input);
 }
 
+/**
+ * Score every metric a test declares, isolating each one.
+ *
+ * A metric that throws records its own zero and the rest of the batch
+ * still scores. The previous bare `Promise.all` let one bad scorer
+ * reject the whole batch, which failed the run and discarded the other
+ * metrics' results — worst precisely when the run was most interesting,
+ * since the common way to throw was reading a deliverable the assistant
+ * never wrote. See `common-metrics/workspace-deliverable.ts`.
+ */
 export async function runMetrics(input: {
   test: TestDef;
   runId: string;
 }): Promise<MetricResult[]> {
   return Promise.all(
-    input.test.metricPaths.map((path) =>
-      runMetricFile(path, { runId: input.runId }),
-    ),
+    input.test.metricPaths.map(async (path) => {
+      try {
+        return await runMetricFile(path, { runId: input.runId });
+      } catch (err) {
+        return {
+          name: basename(path, extname(path)),
+          score: 0,
+          reason: `Metric threw: ${err instanceof Error ? err.message : String(err)}`,
+          metadata: { metricPath: path, threw: true },
+        } satisfies MetricResult;
+      }
+    }),
   );
 }
 

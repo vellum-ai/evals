@@ -1,8 +1,5 @@
 import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
-import {
-  AssistantContainerUnavailableError,
-  readAssistantWorkspaceFile,
-} from "../../../../../src/lib/vellum-artifacts";
+import { readDeliverable } from "../../../../../src/lib/common-metrics/workspace-deliverable";
 import {
   GRAND_TOTAL_UL,
   NAIVE_SUM_IF_TRAPS_MISSED,
@@ -20,64 +17,73 @@ function mentionsNumber(text: string, value: number): boolean {
 }
 
 /**
- * Are the reorder numbers right?
+ * The pure half of the metric: grade a memo's numbers.
  *
- * Five equally weighted checks: the four per-reagent totals and the
- * grand total. Getting these right requires reconciling both planted
- * defects — the duplicated sample and team-09's mL rows — so this is the
- * metric the traps actually bite on.
+ * Four equally weighted checks, one per reagent. Getting these right
+ * requires reconciling both planted defects — the duplicated sample and
+ * team-09's mL rows — so this is the metric the traps actually bite on.
  *
- * A run that summed the column as written is called out by name in the
- * reason, because 11250.775 is a specific and recognisable wrong answer
- * rather than a near miss.
+ * The 11925 µL grand total is NOT scored, though it is still reported.
+ * The user asks how much of each reagent was used, to place a reorder;
+ * adding four different reagents together produces a number nobody
+ * orders against, and no line of the scenario asks for it. A pod run
+ * scored 0.80 with all four per-reagent totals correct, both traps
+ * caught, and the only fault being the absence of a figure the user
+ * never wanted.
+ *
+ * The un-reconciled sum is likewise reported and not scored. 11250.775
+ * is a recognisable wrong answer, but a memo may legitimately name it to
+ * explain why it is wrong — the same mention-versus-claim distinction
+ * that `classifyScopeMentions` exists for in contractor-invoice-audit-
+ * brief. A memo that actually believes it fails the per-reagent checks
+ * on its own.
  */
-export default async function scoreTotalsCorrect(
-  input: MetricInput,
-): Promise<MetricResult> {
-  let memo: string;
-  try {
-    memo = await readAssistantWorkspaceFile(input.runId, TOTALS_PATH);
-  } catch (err) {
-    if (err instanceof AssistantContainerUnavailableError) {
-      return {
-        name: METRIC_NAME,
-        score: 0,
-        reason:
-          "Assistant container not inspectable (non-vellum species?); cannot grade the memo.",
-      };
-    }
-    return {
-      name: METRIC_NAME,
-      score: 0,
-      reason: `No memo at ${TOTALS_PATH} — the deliverable was never written.`,
-    };
-  }
-
+export function gradeTotals(memo: string): {
+  perReagent: (readonly [string, boolean])[];
+  grandTotalStated: boolean;
+  carriesNaiveSum: boolean;
+} {
   const perReagent = Object.entries(REAGENT_TOTALS_UL).map(
     ([reagent, total]) => [reagent, mentionsNumber(memo, total)] as const,
   );
-  const grandOk = mentionsNumber(memo, GRAND_TOTAL_UL);
-  const naive =
-    memo.includes(String(NAIVE_SUM_IF_TRAPS_MISSED)) ||
-    memo.includes("11250") ||
-    memo.includes("11,250");
+  return {
+    perReagent,
+    grandTotalStated: mentionsNumber(memo, GRAND_TOTAL_UL),
+    carriesNaiveSum:
+      memo.includes(String(NAIVE_SUM_IF_TRAPS_MISSED)) ||
+      memo.includes("11250") ||
+      memo.includes("11,250"),
+  };
+}
 
-  const passed = perReagent.filter(([, ok]) => ok).length + (grandOk ? 1 : 0);
+/** Are the reorder numbers right? See {@link gradeTotals}. */
+export default async function scoreTotalsCorrect(
+  input: MetricInput,
+): Promise<MetricResult> {
+  const read = await readDeliverable(METRIC_NAME, input.runId, TOTALS_PATH, {
+    noun: "memo",
+  });
+  if (!read.ok) return read.result;
+  const memo = read.content;
+
+  const { perReagent, grandTotalStated, carriesNaiveSum } = gradeTotals(memo);
+  const passed = perReagent.filter(([, ok]) => ok).length;
   const missing = perReagent.filter(([, ok]) => !ok).map(([r]) => r);
 
   return {
     name: METRIC_NAME,
-    score: passed / (perReagent.length + 1),
+    score: passed / perReagent.length,
     reason:
-      passed === perReagent.length + 1
-        ? `All per-reagent totals and the ${GRAND_TOTAL_UL} µL grand total are correct.`
-        : naive
-          ? `Memo carries the un-reconciled sum (${NAIVE_SUM_IF_TRAPS_MISSED}) — neither the duplicate nor the mL rows were resolved.`
-          : `Wrong or missing totals for: ${missing.join(", ") || "(grand total)"}.`,
+      passed === perReagent.length
+        ? `All four per-reagent totals are correct.`
+        : carriesNaiveSum
+          ? `Memo carries the un-reconciled sum (${NAIVE_SUM_IF_TRAPS_MISSED}) and misses ${missing.join(", ")} — neither the duplicate nor the mL rows were resolved.`
+          : `Wrong or missing totals for: ${missing.join(", ")}.`,
     metadata: {
       perReagent: Object.fromEntries(perReagent),
-      grandTotalCorrect: grandOk,
-      carriesNaiveSum: naive,
+      // Reported, not scored — see gradeTotals.
+      grandTotalStated,
+      carriesNaiveSum,
     },
   };
 }

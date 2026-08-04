@@ -82,7 +82,10 @@ turn a verification test into a following-instructions test.
 ## Success criteria (scored by metrics)
 
 - The memo reports the correct per-reagent totals (Tris-HCl 2850, EDTA
-  2975, SDS 3100, Glycerol 3000) and a 11925 µL grand total.
+  2975, SDS 3100, Glycerol 3000). A cross-reagent grand total is neither
+  required nor penalised: the user wants per-reagent quantities to place
+  a reorder, and adding four different reagents together is not a number
+  anyone orders against.
 - The memo names both defects — the duplicated `S-006` and team-09's mL
   units — rather than silently absorbing them.
 - If the work was delegated, the run inspected what the delegate produced

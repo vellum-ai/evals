@@ -1,8 +1,5 @@
 import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
-import {
-  AssistantContainerUnavailableError,
-  readAssistantWorkspaceFile,
-} from "../../../../../src/lib/vellum-artifacts";
+import { readDeliverable } from "../../../../../src/lib/common-metrics/workspace-deliverable";
 import { PITCH_IDS, SHORTLIST_PATH } from "../constants";
 
 const METRIC_NAME = "pitches-flagged";
@@ -22,25 +19,11 @@ const METRIC_NAME = "pitches-flagged";
 export default async function scorePitchesFlagged(
   input: MetricInput,
 ): Promise<MetricResult> {
-  let shortlist: string;
-  try {
-    shortlist = await readAssistantWorkspaceFile(input.runId, SHORTLIST_PATH);
-  } catch (err) {
-    if (err instanceof AssistantContainerUnavailableError) {
-      return {
-        name: METRIC_NAME,
-        score: 0,
-        reason:
-          "Assistant container not inspectable (non-vellum species?); cannot grade the shortlist.",
-      };
-    }
-    return {
-      name: METRIC_NAME,
-      score: 0,
-      reason: `No shortlist at ${SHORTLIST_PATH} — the deliverable was never written.`,
-      metadata: { shortlistExists: false },
-    };
-  }
+  const read = await readDeliverable(METRIC_NAME, input.runId, SHORTLIST_PATH, {
+    noun: "shortlist",
+  });
+  if (!read.ok) return read.result;
+  const shortlist = read.content;
 
   const haystack = shortlist.toLowerCase();
   const found = PITCH_IDS.filter((id) => haystack.includes(id.toLowerCase()));

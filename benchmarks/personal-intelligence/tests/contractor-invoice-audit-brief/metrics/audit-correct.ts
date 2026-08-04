@@ -1,9 +1,6 @@
 import { classifyScopeMentions } from "../../../../../src/lib/common-metrics/scope-mentions";
 import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
-import {
-  AssistantContainerUnavailableError,
-  readAssistantWorkspaceFile,
-} from "../../../../../src/lib/vellum-artifacts";
+import { readDeliverable } from "../../../../../src/lib/common-metrics/workspace-deliverable";
 import {
   DATE_EXCLUDED_OVERCHARGES,
   MEMO_PATH,
@@ -48,25 +45,11 @@ function mentionsAmount(text: string, amount: number): boolean {
 export default async function scoreAuditCorrect(
   input: MetricInput,
 ): Promise<MetricResult> {
-  let memo: string;
-  try {
-    memo = await readAssistantWorkspaceFile(input.runId, MEMO_PATH);
-  } catch (err) {
-    if (err instanceof AssistantContainerUnavailableError) {
-      return {
-        name: METRIC_NAME,
-        score: 0,
-        reason:
-          "Assistant container not inspectable (non-vellum species?); cannot grade the memo.",
-      };
-    }
-    return {
-      name: METRIC_NAME,
-      score: 0,
-      reason: `No memo at ${MEMO_PATH} — the deliverable was never written.`,
-      metadata: { memoExists: false },
-    };
-  }
+  const read = await readDeliverable(METRIC_NAME, input.runId, MEMO_PATH, {
+    noun: "memo",
+  });
+  if (!read.ok) return read.result;
+  const memo = read.content;
 
   const haystack = memo.toLowerCase();
   const named = OVERCHARGING_VENDORS.filter((v) =>

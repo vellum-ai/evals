@@ -1,8 +1,5 @@
 import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
-import {
-  AssistantContainerUnavailableError,
-  readAssistantWorkspaceFile,
-} from "../../../../../src/lib/vellum-artifacts";
+import { readDeliverable } from "../../../../../src/lib/common-metrics/workspace-deliverable";
 import {
   DUPLICATE_SAMPLE_ID,
   MISMATCHED_UNIT_TEAM,
@@ -28,24 +25,11 @@ const METRIC_NAME = "traps-noted";
 export default async function scoreTrapsNoted(
   input: MetricInput,
 ): Promise<MetricResult> {
-  let memo: string;
-  try {
-    memo = await readAssistantWorkspaceFile(input.runId, TOTALS_PATH);
-  } catch (err) {
-    if (err instanceof AssistantContainerUnavailableError) {
-      return {
-        name: METRIC_NAME,
-        score: 0,
-        reason:
-          "Assistant container not inspectable (non-vellum species?); cannot grade the memo.",
-      };
-    }
-    return {
-      name: METRIC_NAME,
-      score: 0,
-      reason: `No memo at ${TOTALS_PATH} — the deliverable was never written.`,
-    };
-  }
+  const read = await readDeliverable(METRIC_NAME, input.runId, TOTALS_PATH, {
+    noun: "memo",
+  });
+  if (!read.ok) return read.result;
+  const memo = read.content;
 
   const lower = memo.toLowerCase();
   const duplicateNoted = lower.includes(DUPLICATE_SAMPLE_ID.toLowerCase());

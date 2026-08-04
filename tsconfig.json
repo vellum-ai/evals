@@ -12,6 +12,11 @@
     "noEmit": true,
     "types": ["bun"]
   },
-  "include": ["src/**/*", "benchmarks/*/src/**/*", "scripts/**/*"],
+  "include": [
+    "src/**/*",
+    "benchmarks/**/*.ts",
+    "benchmarks/**/*.tsx",
+    "scripts/**/*"
+  ],
   "exclude": ["node_modules"]
 }

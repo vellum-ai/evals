@@ -1,8 +1,5 @@
 import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
-import {
-  AssistantContainerUnavailableError,
-  readAssistantWorkspaceFile,
-} from "../../../../../src/lib/vellum-artifacts";
+import { readDeliverable } from "../../../../../src/lib/common-metrics/workspace-deliverable";
 import { BLURB_PATH, BLURB_RIGHT_DATE, BLURB_WRONG_DATE } from "../constants";
 
 const METRIC_NAME = "blurb-fixed";
@@ -18,24 +15,11 @@ const METRIC_NAME = "blurb-fixed";
 export default async function scoreBlurbFixed(
   input: MetricInput,
 ): Promise<MetricResult> {
-  let blurb: string;
-  try {
-    blurb = await readAssistantWorkspaceFile(input.runId, BLURB_PATH);
-  } catch (err) {
-    if (err instanceof AssistantContainerUnavailableError) {
-      return {
-        name: METRIC_NAME,
-        score: 0,
-        reason:
-          "Assistant container not inspectable (non-vellum species?); cannot grade the blurb.",
-      };
-    }
-    return {
-      name: METRIC_NAME,
-      score: 0,
-      reason: `${BLURB_PATH} is missing from the workspace.`,
-    };
-  }
+  const read = await readDeliverable(METRIC_NAME, input.runId, BLURB_PATH, {
+    noun: "blurb",
+  });
+  if (!read.ok) return read.result;
+  const blurb = read.content;
 
   const hasRight = blurb.includes(BLURB_RIGHT_DATE);
   const hasWrong = blurb.includes(BLURB_WRONG_DATE);

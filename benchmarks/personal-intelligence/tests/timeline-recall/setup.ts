@@ -1,4 +1,4 @@
-import type { TestSetupCommand } from "../../src/lib/setup-command";
+import type { TestSetupCommand } from "../../../../src/lib/setup-command";
 
 import { CAR_REGISTRATION_MEMORY, PEANUT_ALLERGY_MEMORY } from "./constants";
 

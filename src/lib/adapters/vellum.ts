@@ -141,6 +141,38 @@ const VELLUM_ASSISTANT_TRANSCRIPT_EVENT_TYPES = new Set([
   "message_chunk",
 ]);
 
+/** One choice offered by an `ask_question` tool call. */
+interface QuestionOption {
+  id?: unknown;
+  label?: unknown;
+}
+
+/**
+ * Render a `question_request` as transcript text the simulator can answer.
+ *
+ * The `ask_question` tool asks through a structured channel rather than
+ * as assistant text, so without this the simulator sees an empty turn
+ * and has no idea what it is being asked. The options are flattened into
+ * the sentence because the simulator answers in prose — it has no way to
+ * return an option id.
+ *
+ * Exported for unit tests.
+ */
+export function questionRequestText(
+  message: Record<string, unknown>,
+): string | undefined {
+  const question = message.question;
+  if (typeof question !== "string" || question.length === 0) return undefined;
+  const options = Array.isArray(message.options)
+    ? (message.options as QuestionOption[])
+        .map((o) => (typeof o?.label === "string" ? o.label : undefined))
+        .filter((label): label is string => label !== undefined)
+    : [];
+  return options.length > 0
+    ? `${question} (options: ${options.join(", ")})`
+    : question;
+}
+
 /**
  * Wrap a raw `parseNdjson<AgentEvent>` stream from `vellum events --json`
  * with a normalization step that **clears `text` and `chunk` on events
@@ -165,6 +197,21 @@ export async function* normalizeVellumEventStream(
     ) {
       yield event;
       continue;
+    }
+    // A pending question IS the assistant's turn — it asked something
+    // and stopped. Surface its text so the simulator can answer in the
+    // next message; `isTurnComplete` ends the turn on the same event.
+    if (type === "question_request") {
+      const text = questionRequestText(
+        event.message as unknown as Record<string, unknown>,
+      );
+      if (text !== undefined) {
+        yield {
+          ...event,
+          message: { ...event.message, text, chunk: undefined },
+        };
+        continue;
+      }
     }
     yield {
       ...event,
@@ -976,10 +1023,32 @@ export class VellumAgent implements BaseAgent {
    * event — including turns truncated by a response limit — and emits
    * `error` when the turn aborts. Either one means the daemon is done
    * responding to the message.
+   *
+   * Two more end a turn without saying `message_complete`, and both used
+   * to cost a full 30-minute run budget in silence:
+   *
+   * - `question_request`: the agent called `ask_question` and is blocked
+   *   on an answer. There is no CLI verb to answer one (unlike
+   *   `vellum confirm` for a tool confirmation), so the turn is treated
+   *   as finished and the simulator replies in prose — the SPECs' "if
+   *   the assistant asks …" rules already assume questions arrive that
+   *   way. `normalizeVellumEventStream` supplies the question text.
+   *   Observed on fantasy-league-recap-recurring, where the agent
+   *   sensibly asked which timezone a weekly cron should fire in and
+   *   then deadlocked: the harness waited for a turn that could not
+   *   complete while the agent waited for an answer that never came.
+   * - `conversation_error`: a processing failure the daemon reports
+   *   instead of `error`. Failing fast on it beats waiting out the
+   *   budget for a turn that has already died.
    */
   isTurnComplete(event: AgentEvent): boolean {
     const type = event.message?.type;
-    return type === "message_complete" || type === "error";
+    return (
+      type === "message_complete" ||
+      type === "error" ||
+      type === "conversation_error" ||
+      type === "question_request"
+    );
   }
 
   async readUsageRecords(): Promise<Array<Record<string, unknown>>> {

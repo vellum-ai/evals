@@ -1,3 +1,4 @@
+import { mentionsStandaloneNumber } from "../../../../../src/lib/common-metrics/number-mention";
 import {
   readTranscript,
   type MetricInput,
@@ -6,16 +7,6 @@ import {
 import { CORRECT_TOTAL, DEPRECATED_TABLE_TOTAL } from "../constants";
 
 const METRIC_NAME = "answer-correct";
-
-/**
- * Matches a dollar amount tolerantly: 20270, 20,270, 20 270, 20270.00.
- * Boundary-guarded so a longer number containing the total does not
- * count, and `20270.5` does not pass as `20270`.
- */
-export function mentionsAmount(text: string, value: number): boolean {
-  const spaced = String(value).replace(/\B(?=(\d{3})+(?!\d))/g, "[,\\s]?");
-  return new RegExp(`(?<![\\d.])${spaced}(?:\\.0{1,2})?(?!\\.?\\d)`).test(text);
-}
 
 /**
  * The pure half of the metric: which total does the answer carry?
@@ -30,8 +21,11 @@ export function gradeAnswer(text: string): {
   matched: "correct" | "deprecated-trap" | "none";
   mentionsDeprecated: boolean;
 } {
-  const mentionsDeprecated = mentionsAmount(text, DEPRECATED_TABLE_TOTAL);
-  if (mentionsAmount(text, CORRECT_TOTAL)) {
+  const mentionsDeprecated = mentionsStandaloneNumber(
+    text,
+    DEPRECATED_TABLE_TOTAL,
+  );
+  if (mentionsStandaloneNumber(text, CORRECT_TOTAL)) {
     return { matched: "correct", mentionsDeprecated };
   }
   return {

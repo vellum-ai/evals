@@ -76,8 +76,10 @@ in those two bursts.
 - The final answer carries the incident's count (47) and its first
   error message — not the trap burst's 14 / connection-pool message.
 - If a file read's result was spooled to `.tool-results/`, the run
-  dereferenced it (or otherwise recovered) instead of abandoning the
-  content. Not applicable when nothing was spooled — a search-first
+  recovered it — by dereferencing the stub, or by re-reading the
+  spooled file in explicit offset/limit slices — instead of abandoning
+  the content. Fractional credit when only some spooled reads were
+  recovered. Not applicable when nothing was spooled — a search-first
   strategy that never fat-reads is a good outcome, just not this
   metric's business.
 - Read economy is reported (inline result chars, reads per file,

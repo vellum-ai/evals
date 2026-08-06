@@ -4,6 +4,7 @@ import {
   type MetricResult,
 } from "../../../../../src/lib/metrics";
 import {
+  defaultWindowTruncations,
   fileReadCalls,
   resumeOffsetHonored,
   type FileReadCall,
@@ -18,14 +19,25 @@ function isBigFileRead(read: FileReadCall): boolean {
 }
 
 /**
- * The pure half of the metric: did the run use the truncation notice's
- * resume offset to page through the pricing file?
+ * The pure half of the metric: after a DEFAULT-WINDOW read of the
+ * pricing file was truncated, did the run keep paging forward instead of
+ * re-reading from the top or abandoning the file?
  *
- * Only applicable when a read of the file actually hit the notice. A run
- * that never read the file, or that dodged truncation with a large
- * explicit limit up front (or a search-first strategy), gives the notice
- * nothing to prove — that strategy is recorded in metadata instead of
- * scored.
+ * CONTRACT (shared policy in `tool-activity.ts`): only default-window
+ * truncations gate — the assistant stamps its notice on any windowed
+ * read that stops short of the file's last line, so a grep-guided
+ * explicit `offset`/`limit` slice earns a notice too, and that is a
+ * winning strategy, not an unfinished one. A notice covering only the
+ * trailing-newline phantom line is complete. A gating truncation is
+ * resumed by any later read of the file that advances coverage past the
+ * truncated window (overlap resumes included) — see
+ * `resumeOffsetHonored`.
+ *
+ * Not applicable when no default-window read of the file was truncated
+ * short of the end: the run never saw a resume offset it needed to
+ * honor (never read the file, explicit-limit windows, search-first).
+ * The observed strategy is recorded in metadata (`explicitLimits`,
+ * `offsets`, truncation counts) instead of scored.
  */
 export function gradeTruncationPaging(reads: FileReadCall[]): MetricResult {
   const bigReads = reads.filter(isBigFileRead);
@@ -40,21 +52,24 @@ export function gradeTruncationPaging(reads: FileReadCall[]): MetricResult {
   }
 
   const truncated = bigReads.filter((read) => read.truncated !== undefined);
-  const limits = bigReads
-    .map((read) => read.limit)
-    .filter((limit): limit is number => limit !== undefined);
-  if (truncated.length === 0) {
+  const gating = defaultWindowTruncations(bigReads);
+  const strategyMetadata = {
+    bigFileReads: bigReads.length,
+    truncatedReads: truncated.length,
+    gatingTruncatedReads: gating.length,
+    explicitLimits: bigReads
+      .map((read) => read.limit)
+      .filter((limit): limit is number => limit !== undefined),
+    offsets: bigReads.map((read) => read.offset ?? null),
+  };
+
+  if (gating.length === 0) {
     return {
       name: METRIC_NAME,
       score: 0,
       applicable: false,
-      reason: `No read of ${BIG_FILE_PATH} was truncated — the run never saw a resume offset to honor (e.g. an explicit limit up front).`,
-      metadata: {
-        bigFileReads: bigReads.length,
-        truncatedReads: 0,
-        explicitLimits: limits,
-        offsets: bigReads.map((read) => read.offset ?? null),
-      },
+      reason: `No default-window read of ${BIG_FILE_PATH} was truncated short of the file's end — the run never saw a resume offset it needed to honor (explicit-limit windows and phantom-trailing-line notices don't gate).`,
+      metadata: strategyMetadata,
     };
   }
 
@@ -63,13 +78,11 @@ export function gradeTruncationPaging(reads: FileReadCall[]): MetricResult {
     name: METRIC_NAME,
     score: honored ? 1 : 0,
     reason: honored
-      ? `Every truncated read of ${BIG_FILE_PATH} was followed by a read resuming at (or past) the notice's offset.`
-      : `A truncated read of ${BIG_FILE_PATH} was re-read from the top or abandoned instead of resuming at the notice's offset.`,
+      ? `Every default-window truncated read of ${BIG_FILE_PATH} was followed by a read advancing coverage past the truncated window.`
+      : `A default-window truncated read of ${BIG_FILE_PATH} was re-read from the top or abandoned instead of paging forward.`,
     metadata: {
-      bigFileReads: bigReads.length,
-      truncatedReads: truncated.length,
+      ...strategyMetadata,
       totalLinesObserved: truncated[0].truncated?.totalLines,
-      offsets: bigReads.map((read) => read.offset ?? null),
     },
   };
 }

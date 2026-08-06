@@ -146,8 +146,10 @@ What the numbers decide, mapped to the original Slack-thread questions:
   harness — not self-reported usage — so the ratio is trustworthy.
 - **(b) "Is the 2000-line `file_read` default too generous?"** The
   `read-economy` metric's metadata (`deep-file-fact-lookup` and
-  `oversized-log-triage`): compare `defaultLimitReads` against
-  `spooledReads` and the truncation counts from `truncation-paging`. If
+  `oversized-log-triage`, one shared schema — see
+  `src/lib/common-metrics/read-economy.ts`): compare
+  `defaultLimitReadCount` against `spooledReadCount` and the truncation
+  counts from `truncation-paging`. If
   most default-limit reads get spooled anyway, the 2000-line default is
   doing round-trip work for nothing (a big inline read that immediately
   becomes a stub plus a deref) and should drop — candidate values to

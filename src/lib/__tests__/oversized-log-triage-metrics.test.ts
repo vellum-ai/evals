@@ -59,7 +59,70 @@ describe("oversized-log-triage spool-recovery", () => {
     expect(graded.applicable).toBeUndefined();
     expect(graded.metadata).toMatchObject({
       spooledCount: 1,
+      recoveredCount: 0,
       derefCount: 0,
+    });
+  });
+
+  test("post-spool ranged re-reads of the spooled file are a recovery", () => {
+    // GIVEN the other legitimate route the SPEC invites: never touch
+    // the stub, re-read the log itself in explicit offset/limit slices
+    const events = [
+      direct("file_read", { path: "/workspace/logs/gateway.log" }),
+      result(SPOOL_STUB_RESULT),
+      direct("file_read", {
+        path: "/workspace/logs/gateway.log",
+        offset: 38000,
+        limit: 500,
+      }),
+      result("the incident window, inline"),
+    ];
+
+    const graded = gradeSpoolRecovery(events);
+
+    expect(graded.score).toBe(1);
+    expect(graded.metadata).toMatchObject({
+      spooledCount: 1,
+      recoveredCount: 1,
+      derefCount: 0,
+    });
+  });
+
+  test("a default re-read that spools again is not a recovery", () => {
+    // GIVEN the agent repeating the fat read and getting spooled again
+    const events = [
+      direct("file_read", { path: "/workspace/logs/gateway.log" }),
+      result(SPOOL_STUB_RESULT),
+      direct("file_read", { path: "/workspace/logs/gateway.log" }),
+      result(SPOOL_STUB_RESULT),
+    ];
+
+    const graded = gradeSpoolRecovery(events);
+
+    expect(graded.score).toBe(0);
+    expect(graded.metadata).toMatchObject({ spooledCount: 2 });
+  });
+
+  test("recovering only some spooled reads earns fractional credit", () => {
+    // GIVEN two spooled reads with distinct stubs, one dereferenced and
+    // one abandoned
+    const secondStub =
+      "...(41234 tokens omitted — full result: /workspace/.conversations/c1/.tool-results/ffee99.txt — use file_read to view)";
+    const events = [
+      direct("file_read", { path: "/workspace/logs/gateway.log" }),
+      result(SPOOL_STUB_RESULT),
+      direct("file_read", { path: "/workspace/logs/upstream.log" }),
+      result(secondStub),
+      direct("file_read", { path: DEREF_PATH, offset: 38000 }),
+      result("the incident window, inline"),
+    ];
+
+    const graded = gradeSpoolRecovery(events);
+
+    expect(graded.score).toBe(0.5);
+    expect(graded.metadata).toMatchObject({
+      spooledCount: 2,
+      recoveredCount: 1,
     });
   });
 
@@ -98,6 +161,23 @@ describe("oversized-log-triage spool-recovery", () => {
     expect(graded.applicable).toBe(false);
     expect(graded.metadata).toMatchObject({
       spooledCount: 0,
+      codeSearchCalls: 1,
+      strategy: "search-first",
+    });
+  });
+
+  test("host_code_search also reads as the search-first strategy", () => {
+    // GIVEN the host-tool variant of search — previously missed by a
+    // hand-rolled name match
+    const events = [
+      direct("host_code_search", { query: "ERROR checkout-service" }),
+      result("logs/gateway.log:38601: ..."),
+    ];
+
+    const graded = gradeSpoolRecovery(events);
+
+    expect(graded.applicable).toBe(false);
+    expect(graded.metadata).toMatchObject({
       codeSearchCalls: 1,
       strategy: "search-first",
     });
@@ -178,6 +258,15 @@ describe("oversized-log-triage incident-answer-correct", () => {
   test("47 embedded in a longer number or decimal does not count", () => {
     const graded = gradeIncidentAnswer(
       "The log spans 2470 requests with latency 3.47s on average.",
+    );
+    expect(graded.metadata).toMatchObject({ countStated: false });
+  });
+
+  test("47 as the integer part of a decimal does not count", () => {
+    // The hand-rolled matcher's bug: `(?![\d:])` let 47 match inside
+    // "47.5". The shared matcher's decimal guard must not.
+    const graded = gradeIncidentAnswer(
+      "Average response time was 47.5 ms during the window.",
     );
     expect(graded.metadata).toMatchObject({ countStated: false });
   });

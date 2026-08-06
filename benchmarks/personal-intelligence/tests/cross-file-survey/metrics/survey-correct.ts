@@ -1,3 +1,4 @@
+import { mentionsStandaloneNumber } from "../../../../../src/lib/common-metrics/number-mention";
 import {
   readAssistantEvents,
   readTranscript,
@@ -23,9 +24,9 @@ function mentionsName(text: string, name: string): boolean {
   return new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, "i").test(text);
 }
 
-/** Matches a count as its own number: `14` in "14 services" but not in `140`. */
+/** A count as its own number: `14` in "14 services" but not in `140`. */
 function mentionsCount(text: string, value: number): boolean {
-  return new RegExp(`(?<![\\d.])${value}(?![\\d.])`).test(text);
+  return mentionsStandaloneNumber(text, value);
 }
 
 export interface SurveyGrade {

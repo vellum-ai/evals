@@ -6,7 +6,9 @@ import {
 } from "../../../../../src/lib/metrics";
 import { readSubagentSpawns } from "../../../../../src/lib/common-metrics/subagent-activity";
 import {
+  CODE_SEARCH_TOOLS,
   fileReadCalls,
+  isSpoolDerefRead,
   readToolCalls,
 } from "../../../../../src/lib/common-metrics/tool-activity";
 
@@ -17,11 +19,6 @@ export const FULL_MARKS_MEAN = 1.5;
 
 /** Mean at or past which score is 0 — the many-small-slices anti-pattern. */
 export const ZERO_MARKS_MEAN = 4;
-
-/** Spool directory marker, mirroring `tool-activity.ts`. */
-const TOOL_RESULT_DIR_SEGMENT = "/.tool-results/";
-
-const CODE_SEARCH_TOOLS = new Set<string>(["code_search", "host_code_search"]);
 
 /**
  * The scoring curve: 1 at a mean of `FULL_MARKS_MEAN` reads per distinct
@@ -67,7 +64,7 @@ export function gradeSliceEconomy(events: AgentEvent[]): MetricResult {
   let spooledReadCount = 0;
   for (const read of fileReadCalls(events)) {
     if (read.spooled) spooledReadCount += 1;
-    if (read.path.includes(TOOL_RESULT_DIR_SEGMENT)) {
+    if (isSpoolDerefRead(read)) {
       spoolDerefReadCount += 1;
     } else {
       perFileReadCounts[read.path] = (perFileReadCounts[read.path] ?? 0) + 1;

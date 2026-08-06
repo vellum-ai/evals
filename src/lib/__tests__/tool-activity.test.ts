@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { AgentEvent } from "../adapter";
 import {
+  defaultWindowTruncations,
   editStyle,
   fileReadCalls,
   readsPerFile,
@@ -138,12 +139,15 @@ describe("fileReadCalls", () => {
     });
   });
 
-  test("flags a result replaced by the spool stub", () => {
+  test("flags a result replaced by the spool stub, capturing its path", () => {
     const reads = fileReadCalls([
       direct("file_read", { path: "/workspace/huge.json" }),
       result(SPOOL_STUB_RESULT),
     ]);
     expect(reads[0].spooled).toBe(true);
+    expect(reads[0].spoolPath).toBe(
+      "/workspace/.conversations/c1/.tool-results/ab12cd34ef56.txt",
+    );
   });
 
   test("normalizes backslashes in the target path", () => {
@@ -156,15 +160,15 @@ describe("fileReadCalls", () => {
 
 describe("spoolDerefReads", () => {
   test("finds the deref read after a spooled result", () => {
-    const events = [
+    const reads = fileReadCalls([
       direct("file_read", { path: "/workspace/huge.json" }),
       result(SPOOL_STUB_RESULT),
       direct("file_read", {
         path: "/workspace/.conversations/c1/.tool-results/ab12cd34ef56.txt",
       }),
       result("the full spooled content"),
-    ];
-    const derefs = spoolDerefReads(events);
+    ]);
+    const derefs = spoolDerefReads(reads);
     expect(derefs).toHaveLength(1);
     expect(derefs[0].path).toBe(
       "/workspace/.conversations/c1/.tool-results/ab12cd34ef56.txt",
@@ -173,18 +177,22 @@ describe("spoolDerefReads", () => {
 
   test("an ordinary read is not a deref", () => {
     expect(
-      spoolDerefReads([direct("file_read", { path: "/workspace/notes.md" })]),
+      spoolDerefReads(
+        fileReadCalls([direct("file_read", { path: "/workspace/notes.md" })]),
+      ),
     ).toHaveLength(0);
   });
 });
 
 describe("readsPerFile", () => {
   test("counts reads per distinct path", () => {
-    const counts = readsPerFile([
-      direct("file_read", { path: "/workspace/a.md" }),
-      direct("file_read", { path: "/workspace/a.md", offset: 100 }),
-      direct("file_read", { path: "/workspace/b.md" }),
-    ]);
+    const counts = readsPerFile(
+      fileReadCalls([
+        direct("file_read", { path: "/workspace/a.md" }),
+        direct("file_read", { path: "/workspace/a.md", offset: 100 }),
+        direct("file_read", { path: "/workspace/b.md" }),
+      ]),
+    );
     expect(counts.get("/workspace/a.md")).toBe(2);
     expect(counts.get("/workspace/b.md")).toBe(1);
   });
@@ -223,13 +231,49 @@ describe("editStyle", () => {
   });
 });
 
+describe("defaultWindowTruncations", () => {
+  test("a default-window truncation short of the end gates", () => {
+    const reads = fileReadCalls([
+      direct("file_read", { path: "/workspace/big.csv" }),
+      result(truncationNotice(2000, 6000)),
+    ]);
+    expect(defaultWindowTruncations(reads)).toHaveLength(1);
+  });
+
+  test("an explicit-limit truncation is a chosen window, not a gate", () => {
+    // The assistant stamps the notice on ANY windowed read that stops
+    // before the last line — a grep-guided slice gets one too.
+    const reads = fileReadCalls([
+      direct("file_read", {
+        path: "/workspace/big.csv",
+        offset: 5197,
+        limit: 200,
+      }),
+      result(`the table\n${truncationNotice(5396, 6000)}`),
+    ]);
+    expect(defaultWindowTruncations(reads)).toHaveLength(0);
+  });
+
+  test("a notice covering only the phantom trailing line is complete", () => {
+    // A trailing newline makes split("\n") count an empty final "line",
+    // so paging that reached line 6000 of "6001" is done.
+    const reads = fileReadCalls([
+      direct("file_read", { path: "/workspace/big.csv", offset: 4001 }),
+      result(truncationNotice(6000, 6001)),
+    ]);
+    expect(defaultWindowTruncations(reads)).toHaveLength(0);
+  });
+});
+
 describe("resumeOffsetHonored", () => {
   test("true when the notice's offset is used to read on", () => {
     const reads = fileReadCalls([
       direct("file_read", { path: "/workspace/big.csv" }),
-      result(truncationNotice(400, 1200)),
-      direct("file_read", { path: "/workspace/big.csv", offset: 401 }),
-      result("rows 401 onward"),
+      result(truncationNotice(2000, 6000)),
+      direct("file_read", { path: "/workspace/big.csv", offset: 2001 }),
+      result(truncationNotice(4000, 6000)),
+      direct("file_read", { path: "/workspace/big.csv", offset: 4001 }),
+      result("rows 4001 through the end"),
     ]);
     expect(resumeOffsetHonored(reads)).toBe(true);
   });
@@ -237,23 +281,39 @@ describe("resumeOffsetHonored", () => {
   test("a ranged read past the resume point also honors it", () => {
     const reads = fileReadCalls([
       direct("file_read", { path: "/workspace/big.csv" }),
-      result(truncationNotice(400, 1200)),
+      result(truncationNotice(2000, 6000)),
       direct("file_read", {
         path: "/workspace/big.csv",
-        offset: 900,
+        offset: 5200,
         limit: 100,
       }),
-      result("rows 900-999"),
+      result(`rows 5200-5299\n${truncationNotice(5299, 6000)}`),
+    ]);
+    expect(resumeOffsetHonored(reads)).toBe(true);
+  });
+
+  test("a defensive overlap resume still counts as forward progress", () => {
+    // GIVEN a resume that re-reads the boundary line (offset =
+    // lastLineReturned) — the follow-up window still reads new lines
+    const reads = fileReadCalls([
+      direct("file_read", { path: "/workspace/big.csv" }),
+      result(truncationNotice(2000, 6000)),
+      direct("file_read", { path: "/workspace/big.csv", offset: 2000 }),
+      result(truncationNotice(3999, 6000)),
+      direct("file_read", { path: "/workspace/big.csv", offset: 3999 }),
+      result("rows through the end"),
     ]);
     expect(resumeOffsetHonored(reads)).toBe(true);
   });
 
   test("false when the agent re-reads from the top", () => {
+    // A re-read of the same top window truncates at the same line again
+    // — no coverage progress.
     const reads = fileReadCalls([
       direct("file_read", { path: "/workspace/big.csv" }),
-      result(truncationNotice(400, 1200)),
+      result(truncationNotice(2000, 6000)),
       direct("file_read", { path: "/workspace/big.csv", offset: 1 }),
-      result("rows 1 onward, again"),
+      result(truncationNotice(2000, 6000)),
     ]);
     expect(resumeOffsetHonored(reads)).toBe(false);
   });
@@ -261,9 +321,44 @@ describe("resumeOffsetHonored", () => {
   test("false when a truncated read has no follow-up at all", () => {
     const reads = fileReadCalls([
       direct("file_read", { path: "/workspace/big.csv" }),
-      result(truncationNotice(400, 1200)),
+      result(truncationNotice(2000, 6000)),
     ]);
     expect(resumeOffsetHonored(reads)).toBe(false);
+  });
+
+  test("a follow-up whose result never arrived is not a resume", () => {
+    const reads = fileReadCalls([
+      direct("file_read", { path: "/workspace/big.csv" }),
+      result(truncationNotice(2000, 6000)),
+      direct("file_read", { path: "/workspace/big.csv", offset: 2001 }),
+    ]);
+    expect(resumeOffsetHonored(reads)).toBe(false);
+  });
+
+  test("an explicit-limit truncated read does not gate", () => {
+    const reads = fileReadCalls([
+      direct("file_read", {
+        path: "/workspace/big.csv",
+        offset: 5197,
+        limit: 200,
+      }),
+      result(`the table\n${truncationNotice(5396, 6000)}`),
+    ]);
+    expect(resumeOffsetHonored(reads)).toBe(true);
+  });
+
+  test("phantom-line sequential paging ends honored, not truncated", () => {
+    // Canonical 1 → 2001 → 4001 paging of a 6000-line file whose
+    // trailing newline makes the assistant report 6001 total lines.
+    const reads = fileReadCalls([
+      direct("file_read", { path: "/workspace/big.csv" }),
+      result(truncationNotice(2000, 6001)),
+      direct("file_read", { path: "/workspace/big.csv", offset: 2001 }),
+      result(truncationNotice(4000, 6001)),
+      direct("file_read", { path: "/workspace/big.csv", offset: 4001 }),
+      result(truncationNotice(6000, 6001)),
+    ]);
+    expect(resumeOffsetHonored(reads)).toBe(true);
   });
 
   test("vacuously true with no truncated reads", () => {

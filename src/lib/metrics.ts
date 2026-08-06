@@ -173,7 +173,11 @@ export interface MetricInput {
  *      no meaning as a percent — e.g. `assistant-cost-usd` returns
  *      `-totalCostUsd` (negative dollars). Rendering `-$0.001 * 100%`
  *      would be nonsense, so the metric opts out of the percent treatment
- *      and the report formats it as a plain number.
+ *      and the report formats it as a plain number. Raw metrics are also
+ *      EXCLUDED from `scoreTotal` averaging (see `report-data.ts`): a raw
+ *      diagnostic is not a quality fraction, and averaging one in would
+ *      blow up the 0-1 scale every aggregate assumes. They still render
+ *      in per-run metric listings.
  */
 export type MetricUnit = "fraction" | "raw";
 

@@ -304,10 +304,24 @@ export interface ReportTestInSession {
   }>;
 }
 
+/**
+ * Mean of the run's 0-1 quality-fraction metric scores.
+ *
+ * Two kinds of metric are excluded from the mean:
+ *   - `applicable: false` — the run never established the metric's
+ *     precondition, so its score carries no information about the agent.
+ *   - `unit: "raw"` — the score is a raw diagnostic value (char counts,
+ *     negative dollars, ...), not a quality fraction; averaging it in
+ *     would blow up the 0-1 scale that per-case scores, session
+ *     aggregates, the report chart, and `evals compare` all assume.
+ *     Raw metrics still appear in per-run metric listings.
+ *
+ * Returns 0 when nothing remains to average.
+ */
 export function scoreTotal(metrics: MetricResult[]): number {
-  // Metrics the run could not exercise are excluded rather than averaged
-  // in as zeros: an unmeasurable dimension is not a failed one.
-  const scored = metrics.filter((metric) => metric.applicable !== false);
+  const scored = metrics.filter(
+    (metric) => metric.applicable !== false && metric.unit !== "raw",
+  );
   if (scored.length === 0) return 0;
   const weight = 1 / scored.length;
   return scored.reduce((sum, metric) => sum + metric.score * weight, 0);

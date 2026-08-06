@@ -143,18 +143,22 @@ function readNumber(value: unknown): number | undefined {
  *   - forward slashes (backslashes normalized, mirroring the assistant's
  *     `isSpooledToolResultRead`, whose spool paths come from `join` and
  *     are backslash-separated on Windows), duplicate slashes collapsed
- *   - no leading `./`
  *   - WORKSPACE-RELATIVE: the `/workspace/` prefix is stripped, so
  *     `/workspace/catalog/x.ts` and `catalog/x.ts` are the same identity
+ *   - no leading `./` — stripped AFTER the workspace prefix, so
+ *     `/workspace/./catalog/x.ts` lands on `catalog/x.ts` too
  *   - paths outside the workspace (`/var/log/app.log`) keep their
  *     absolute spelling
+ *   - `..` segments are NOT resolved — no observed run spells a
+ *     workspace path with one, and resolving them means tracking a cwd
+ *     this stream does not carry
  */
 function normalizePath(path: string): string {
   let canonical = path.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
-  while (canonical.startsWith("./")) canonical = canonical.slice(2);
   if (canonical.startsWith("/workspace/")) {
     canonical = canonical.slice("/workspace/".length);
   }
+  while (canonical.startsWith("./")) canonical = canonical.slice(2);
   return canonical;
 }
 

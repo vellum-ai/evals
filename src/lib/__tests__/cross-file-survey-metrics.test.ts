@@ -156,6 +156,46 @@ describe("survey-correct set scoring", () => {
     ]);
   });
 
+  test("a value-stating cue alone clears an under-threshold value", () => {
+    // GIVEN the near-miss named with nothing but its resolved value —
+    // no "stays under" phrasing for the other cues to catch
+    const answer = [
+      answerListing(OVER, EXPECTED_COUNT),
+      "",
+      "Note: profiles-api resolves to 20s.",
+    ].join("\n");
+
+    const grade = gradeSurvey(answer);
+
+    expect(grade.falsePositives).toEqual([]);
+    expect(grade.score).toBe(1);
+    expect(grade.explanatoryMentions.map((m) => m.name)).toEqual([
+      "profiles-api",
+    ]);
+  });
+
+  test("a WRONG over-threshold value does not ride the value cue", () => {
+    // GIVEN an under-threshold service claimed over with a stated value
+    // — the framing verb is the same, the number is not
+    const answer = [
+      answerListing(OVER, EXPECTED_COUNT),
+      "- profiles-api resolves to 95s, exceeding the threshold",
+    ].join("\n");
+
+    const grade = gradeSurvey(answer);
+
+    // THEN it is a false positive, and it costs
+    expect(grade.falsePositives).toEqual(["profiles-api"]);
+    expect(grade.score).toBeCloseTo(OVER.length / (OVER.length + 1));
+  });
+
+  test("an over-threshold 'effective' value is a claim too", () => {
+    const grade = gradeSurvey(
+      [answerListing(OVER), "- payments-api: effectively 300s"].join("\n"),
+    );
+    expect(grade.falsePositives).toEqual(["payments-api"]);
+  });
+
   test("a bare list including an under-threshold name still costs", () => {
     // GIVEN an under-threshold service listed among the findings with no
     // exclusion framing anywhere — a genuine wrong membership

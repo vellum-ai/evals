@@ -35,11 +35,23 @@ function mentionsCount(text: string, value: number): boolean {
 }
 
 /**
+ * A stated seconds value at or under the scenario's 30s threshold
+ * (constants.ts documents the cutoff; the shared cue list above spells
+ * it "30-?s" the same way): an integer 0–30, digit-bounded so `95s` and
+ * `300s` cannot ride the cue. Keeps the value-stating cues below from
+ * clearing a WRONG membership claim — "resolves to 95s, exceeding the
+ * threshold" is a false positive, not an exclusion explained.
+ */
+const AT_OR_UNDER_THRESHOLD = "(?:[12]?\\d|30)(?!\\d)";
+
+/**
  * Exclusion framing in this scenario's own vocabulary, OR'd into the
  * shared cue list (`scope-mentions.ts`). The fixtures deliberately plant
  * profiles-api as a looks-big-resolves-under near-miss, so the BEST
  * answers say things like "profiles-api resolves to 20s and stays under
- * the threshold" — naming it to show the work, not misreporting it.
+ * the threshold" — naming it to show the work, not misreporting it. The
+ * value-stating cues only clear a value at or under the threshold: a
+ * stated over-threshold value is a claim, whatever verb carries it.
  */
 const UNDER_THRESHOLD_FRAMING = [
   "stays? under",
@@ -50,8 +62,8 @@ const UNDER_THRESHOLD_FRAMING = [
   "less than 30",
   "not (?:over|above) (?:the )?(?:threshold|30)",
   "does(?:n't| not) exceed",
-  "resolves? to \\d+\\s*s\\w*",
-  "effective(?:ly)? \\d+\\s*s\\w*",
+  `resolves? to ${AT_OR_UNDER_THRESHOLD}\\s*s\\w*`,
+  `effective(?:ly)? ${AT_OR_UNDER_THRESHOLD}\\s*s\\w*`,
 ];
 
 export interface SurveyGrade {

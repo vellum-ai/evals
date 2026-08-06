@@ -35,13 +35,16 @@ describe("oversized-log-triage spool-recovery", () => {
     // WHEN graded
     const graded = gradeSpoolRecovery(events);
 
-    // THEN the round-trip counts as recovered
+    // THEN the round-trip counts as recovered, and the metadata carries
+    // the same observability keys as the sibling read graders
     expect(graded.score).toBe(1);
     expect(graded.applicable).toBeUndefined();
     expect(graded.metadata).toMatchObject({
       spooledCount: 1,
       successfulDerefCount: 1,
+      subagentSpawnCount: 0,
     });
+    expect(String(graded.metadata?.scope)).toContain("parent-events-only");
   });
 
   test("spooled then abandoned scores 0", () => {
@@ -227,8 +230,10 @@ describe("oversized-log-triage spool-recovery", () => {
     expect(graded.metadata).toMatchObject({
       spooledCount: 0,
       codeSearchCalls: 1,
+      subagentSpawnCount: 0,
       strategy: "search-first",
     });
+    expect(String(graded.metadata?.scope)).toContain("parent-events-only");
   });
 
   test("host_code_search also reads as the search-first strategy", () => {

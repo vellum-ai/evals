@@ -54,6 +54,10 @@ portable artifact for comparing eval runs outside the report server. The JSONL
 contains the session summary, per-test aggregate rows, and per-profile execution
 metric summaries without embedding full transcripts or raw event logs.
 
+For the end-to-end coding-cost baseline procedure (pre-fix assistant vs
+post-fix HEAD vs Hermes, with `evals compare` recipes), see
+[docs/runbooks/coding-cost-baseline.md](docs/runbooks/coding-cost-baseline.md).
+
 ## Layout
 
 ```

@@ -1,0 +1,40 @@
+// Service config for checkout-worker (checkout tier, worker). Managed by
+// platform-infra; edit via PR, deploys pick it up on the next rollout.
+
+export const config = {
+  name: "checkout-worker",
+  tier: "checkout",
+  timeoutSeconds: 15,
+  retries: 3,
+  backoffMs: 300,
+};
+
+// Liveness probing. The orchestrator restarts the pod after
+// `unhealthyThreshold` consecutive failed probes.
+export const healthCheck = {
+  path: "/healthz",
+  intervalSeconds: 25,
+  unhealthyThreshold: 3,
+};
+
+// Ingress throttling, enforced at the gateway before requests reach
+// the service.
+export const rateLimit = {
+  requestsPerSecond: 90,
+  burst: 180,
+};
+
+// Alert routing. Page the owning team when the error rate crosses
+// the threshold for two consecutive windows.
+export const alerting = {
+  channel: "#oncall-checkout",
+  errorRatePercent: 2,
+  windowSeconds: 300,
+};
+
+// Injected into the container environment at deploy time.
+export const environment = {
+  LOG_LEVEL: "info",
+  METRICS_PORT: 9407,
+  FEATURE_FLAGS_SOURCE: "flagsmith",
+};

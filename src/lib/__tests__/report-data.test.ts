@@ -834,3 +834,39 @@ describe("scoreTotal with inapplicable metrics", () => {
     expect(scoreTotal([{ name: "a", score: 0, applicable: false }])).toBe(0);
   });
 });
+
+describe("scoreTotal with raw-unit metrics", () => {
+  test("excludes raw-unit diagnostics from the mean", () => {
+    // A raw diagnostic (e.g. a read-economy char count) is not a quality
+    // fraction; averaging it in would blow up the 0-1 scale.
+    const score = scoreTotal([
+      { name: "a", score: 1 },
+      { name: "b", score: 1 },
+      { name: "chars-read", score: 25000, unit: "raw" },
+      { name: "c", score: 1 },
+    ]);
+    expect(score).toBe(1);
+  });
+
+  test("all-raw (and raw + inapplicable) scores 0 rather than dividing by zero", () => {
+    expect(
+      scoreTotal([{ name: "chars-read", score: 25000, unit: "raw" }]),
+    ).toBe(0);
+    expect(
+      scoreTotal([
+        { name: "chars-read", score: 25000, unit: "raw" },
+        { name: "blocked", score: 0, applicable: false },
+      ]),
+    ).toBe(0);
+  });
+
+  test('explicit unit: "fraction" and omitted unit both count normally', () => {
+    expect(
+      scoreTotal([
+        { name: "a", score: 1, unit: "fraction" },
+        { name: "b", score: 0.5 },
+        { name: "c", score: 0 },
+      ]),
+    ).toBe(0.5);
+  });
+});

@@ -74,11 +74,14 @@ without paging or searching.
 - The assistant's answer states the correct total, $20,270 — not the
   superseded table's $18,116, which is the arithmetic signature of never
   paging past the truncation notice.
-- When a read of `catalog/price-table.ts` was truncated, later reads
-  resumed from the offset the notice supplied instead of re-reading from
-  the top or abandoning the file. Not applicable when no read was
-  truncated (e.g. a large explicit limit up front, or a search-first
-  strategy).
+- When a default-window read of `catalog/price-table.ts` was truncated
+  short of the file's end, later reads advanced coverage past the
+  truncated window (resuming at, before, or past the notice's offset)
+  instead of re-reading from the top or abandoning the file. Not
+  applicable when no default-window read was truncated — explicit
+  `offset`/`limit` slices (e.g. grep-guided) and a notice covering only
+  the trailing phantom line are winning strategies, recorded in
+  metadata rather than scored.
 - Read economy is recorded (total inline result chars, reads per file,
   default-limit reads, spooled reads) as evidence for whether the
   2000-line default read window earns its size on dense files.

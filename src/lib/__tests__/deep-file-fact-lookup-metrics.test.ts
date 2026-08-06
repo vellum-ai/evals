@@ -2,12 +2,11 @@ import { describe, expect, test } from "bun:test";
 
 import scoreAnswerCorrect, {
   gradeAnswer,
-  mentionsAmount,
 } from "../../../benchmarks/personal-intelligence/tests/deep-file-fact-lookup/metrics/answer-correct";
 import scoreTruncationPaging, {
   gradeTruncationPaging,
 } from "../../../benchmarks/personal-intelligence/tests/deep-file-fact-lookup/metrics/truncation-paging";
-import { gradeReadEconomy } from "../../../benchmarks/personal-intelligence/tests/deep-file-fact-lookup/metrics/read-economy";
+import { mentionsStandaloneNumber } from "../common-metrics/number-mention";
 import {
   BIG_FILE_PATH,
   BIG_FILE_TOTAL_LINES,
@@ -39,10 +38,6 @@ function result(text: string): AgentEvent {
 function truncationNotice(lastLine: number, total: number): string {
   return `[Truncated: showing through line ${lastLine} of ${total}. Read on with offset=${lastLine + 1}, or pass an explicit limit.]`;
 }
-
-/** The spool stub the assistant swaps in for an oversized result. */
-const SPOOL_STUB_RESULT =
-  "...(5321 tokens omitted — full result: /workspace/.conversations/c1/.tool-results/ab12cd34ef56.txt — use file_read to view)";
 
 /** Formats 20270 as "20,270". */
 function withCommas(value: number): string {
@@ -87,9 +82,15 @@ describe("deep-file-fact-lookup answer-correct grading", () => {
   });
 
   test("a longer number containing the total does not count as it", () => {
-    expect(mentionsAmount(`$${CORRECT_TOTAL}9`, CORRECT_TOTAL)).toBe(false);
-    expect(mentionsAmount(`1${CORRECT_TOTAL}`, CORRECT_TOTAL)).toBe(false);
-    expect(mentionsAmount(`${CORRECT_TOTAL}.50`, CORRECT_TOTAL)).toBe(false);
+    expect(mentionsStandaloneNumber(`$${CORRECT_TOTAL}9`, CORRECT_TOTAL)).toBe(
+      false,
+    );
+    expect(mentionsStandaloneNumber(`1${CORRECT_TOTAL}`, CORRECT_TOTAL)).toBe(
+      false,
+    );
+    expect(mentionsStandaloneNumber(`${CORRECT_TOTAL}.50`, CORRECT_TOTAL)).toBe(
+      false,
+    );
   });
 
   test("the default scorer reads the assistant transcript", async () => {
@@ -178,6 +179,56 @@ describe("deep-file-fact-lookup truncation-paging grading", () => {
     });
   });
 
+  test("not applicable when one precise grep-guided slice hit the notice", () => {
+    // GIVEN the winning strategy: search located the current table, one
+    // explicit-window read fetched it. The assistant stamps a notice on
+    // any windowed read stopping short of the last line — that must not
+    // read as a paging failure.
+    const reads = fileReadCalls([
+      read({ path: WORKSPACE_BIG_FILE, offset: 5197, limit: 200 }),
+      result(
+        `the current table\n${truncationNotice(5396, BIG_FILE_TOTAL_LINES)}`,
+      ),
+    ]);
+    const graded = gradeTruncationPaging(reads);
+    expect(graded.applicable).toBe(false);
+    expect(graded.metadata).toMatchObject({
+      truncatedReads: 1,
+      gatingTruncatedReads: 0,
+      explicitLimits: [200],
+    });
+  });
+
+  test("a defensive overlap resume scores 1", () => {
+    // GIVEN a resume from offset = lastLineReturned (one-line overlap)
+    // that still advanced coverage
+    const reads = fileReadCalls([
+      ...truncatedFirstRead,
+      read({ path: WORKSPACE_BIG_FILE, offset: 2000 }),
+      result(truncationNotice(3999, BIG_FILE_TOTAL_LINES)),
+      read({ path: WORKSPACE_BIG_FILE, offset: 3999 }),
+      result("through the end"),
+    ]);
+    expect(gradeTruncationPaging(reads).score).toBe(1);
+  });
+
+  test("phantom-trailing-line paging scores 1, not a demand for line 6001", () => {
+    // GIVEN canonical sequential paging of a file whose trailing newline
+    // makes the assistant count a phantom final line (6001 "lines")
+    const phantomTotal = BIG_FILE_TOTAL_LINES + 1;
+    const reads = fileReadCalls([
+      read({ path: WORKSPACE_BIG_FILE }),
+      result(truncationNotice(2000, phantomTotal)),
+      read({ path: WORKSPACE_BIG_FILE, offset: 2001 }),
+      result(truncationNotice(4000, phantomTotal)),
+      read({ path: WORKSPACE_BIG_FILE, offset: 4001 }),
+      result(truncationNotice(BIG_FILE_TOTAL_LINES, phantomTotal)),
+    ]);
+    const graded = gradeTruncationPaging(reads);
+    expect(graded.score).toBe(1);
+    expect(graded.applicable).not.toBe(false);
+  });
+
   test("not applicable when the file was never read", () => {
     const reads = fileReadCalls([
       read({ path: "/workspace/catalog/README.md" }),
@@ -213,41 +264,6 @@ describe("deep-file-fact-lookup truncation-paging grading", () => {
   });
 });
 
-describe("deep-file-fact-lookup read-economy grading", () => {
-  test("sums inline result chars across all file reads", () => {
-    const graded = gradeReadEconomy([
-      read({ path: WORKSPACE_BIG_FILE }),
-      result("a".repeat(100)),
-      read({ path: "/workspace/catalog/README.md" }),
-      result("b".repeat(40)),
-    ]);
-    expect(graded.score).toBe(140);
-    expect(graded.unit).toBe("raw");
-  });
-
-  test("counts default-limit reads, spooled reads, and reads per file", () => {
-    const graded = gradeReadEconomy([
-      read({ path: WORKSPACE_BIG_FILE }),
-      result(SPOOL_STUB_RESULT),
-      read({ path: WORKSPACE_BIG_FILE, offset: 2001, limit: 500 }),
-      result("lines 2001-2500"),
-      read({ path: "/workspace/catalog/README.md" }),
-      result("readme"),
-    ]);
-    expect(graded.metadata).toMatchObject({
-      totalReads: 3,
-      defaultLimitReads: 2,
-      spooledReads: 1,
-      readsPerFile: {
-        [WORKSPACE_BIG_FILE]: 2,
-        "/workspace/catalog/README.md": 1,
-      },
-    });
-  });
-
-  test("a run with no file reads pulled zero chars inline", () => {
-    const graded = gradeReadEconomy([]);
-    expect(graded.score).toBe(0);
-    expect(graded.metadata).toMatchObject({ totalReads: 0 });
-  });
-});
+// read-economy is a shared metric now — its grading tests live in
+// `src/lib/__tests__/read-economy.test.ts` (one metadata schema across
+// cases; the runbook aggregates the keys).

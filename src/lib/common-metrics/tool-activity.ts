@@ -51,6 +51,12 @@ export interface FileReadCall {
   truncated?: { lastLineReturned: number; totalLines: number };
   /** True when the result was replaced by a `.tool-results/` spool stub. */
   spooled: boolean;
+  /**
+   * The `.tool-results/` file the spool stub points at, when `spooled`.
+   * A later read of exactly this path is the deref that recovers THIS
+   * read's omitted content.
+   */
+  spoolPath?: string;
 }
 
 /** Classification of how the run touched files it changed. */
@@ -66,6 +72,16 @@ const FILE_READ_TOOLS = new Set<string>(["file_read", "host_file_read"]);
 const FILE_EDIT_TOOLS = new Set<string>(["file_edit", "host_file_edit"]);
 const FILE_WRITE_TOOLS = new Set<string>(["file_write", "host_file_write"]);
 
+/**
+ * The workspace-search tools, host variant included. Shared so metrics
+ * that classify a search-first strategy agree on what counts as a search
+ * (`host_code_search` was being missed by hand-rolled copies).
+ */
+export const CODE_SEARCH_TOOLS = new Set<string>([
+  "code_search",
+  "host_code_search",
+]);
+
 /** The assistant's in-result truncation notice, capturing (N, M). */
 const TRUNCATION_NOTICE = /\[Truncated: showing through line (\d+) of (\d+)\./;
 
@@ -77,9 +93,11 @@ const TRUNCATION_NOTICE = /\[Truncated: showing through line (\d+) of (\d+)\./;
  * file:
  *
  *   (N tokens omitted — full result: <path> — use file_read to view)
+ *
+ * The capture group is the spool file's path — the deref target.
  */
 const SPOOL_STUB =
-  /\d+ tokens omitted — full result: .+? — use file_read to view/;
+  /\d+ tokens omitted — full result: (.+?) — use file_read to view/;
 
 /**
  * Directory name the assistant spools oversized tool results into
@@ -192,6 +210,7 @@ export function fileReadCalls(events: AgentEvent[]): FileReadCall[] {
     if (path === undefined) continue;
     const result = call.resultText ?? "";
     const notice = TRUNCATION_NOTICE.exec(result);
+    const stub = SPOOL_STUB.exec(result);
     reads.push({
       path,
       offset: readNumber(call.input.offset),
@@ -204,30 +223,38 @@ export function fileReadCalls(events: AgentEvent[]): FileReadCall[] {
               lastLineReturned: Number(notice[1]),
               totalLines: Number(notice[2]),
             },
-      spooled: SPOOL_STUB.test(result),
+      spooled: stub !== null,
+      spoolPath: stub === null ? undefined : normalizePath(stub[1]),
     });
   }
   return reads;
 }
 
 /**
- * File reads that dereference a spooled result — target path inside a
- * `.tool-results/` directory. The agent paging omitted content back in.
+ * Whether a read targets a `.tool-results/` spool file — a deref that
+ * pages previously omitted content back in, not a workspace slice.
  */
-export function spoolDerefReads(events: AgentEvent[]): FileReadCall[] {
-  return fileReadCalls(events).filter((read) =>
-    read.path.includes(`/${TOOL_RESULT_DIR}/`),
-  );
+export function isSpoolDerefRead(read: FileReadCall): boolean {
+  return read.path.includes(`/${TOOL_RESULT_DIR}/`);
+}
+
+/**
+ * File reads that dereference a spooled result. Takes `fileReadCalls`
+ * output (like `resumeOffsetHonored`) so callers walk the event stream
+ * once and slice the same array many ways.
+ */
+export function spoolDerefReads(reads: FileReadCall[]): FileReadCall[] {
+  return reads.filter(isSpoolDerefRead);
 }
 
 /**
  * File-read calls per distinct path. Feeds the "many small slices"
  * metric: a path read a dozen times in tiny windows reads very
- * differently from one read once.
+ * differently from one read once. Takes `fileReadCalls` output.
  */
-export function readsPerFile(events: AgentEvent[]): Map<string, number> {
+export function readsPerFile(reads: FileReadCall[]): Map<string, number> {
   const counts = new Map<string, number>();
-  for (const read of fileReadCalls(events)) {
+  for (const read of reads) {
     counts.set(read.path, (counts.get(read.path) ?? 0) + 1);
   }
   return counts;
@@ -273,25 +300,63 @@ export function editStyle(
 }
 
 /**
- * Whether the run used truncation notices instead of re-reading from the
- * top: true when every truncated read of a path is followed by a later
- * read of that path whose `offset` is at least `lastLineReturned + 1`
- * (exact resume, or a ranged read past it). A truncated read with no
- * follow-up, or one "resumed" from the start of the file, fails.
+ * The truncated reads that actually gate a paging metric — the shared
+ * policy for which truncation notices demand a follow-up:
+ *
+ *   - Only DEFAULT-WINDOW truncations gate (no explicit `limit`). The
+ *     assistant stamps the notice on ANY windowed read that stops before
+ *     the file's last line, so a grep-guided `offset`/`limit` slice gets
+ *     one too — that read chose its window and is a winning strategy,
+ *     not an unfinished one.
+ *   - A notice whose `lastLineReturned` already reaches `totalLines - 1`
+ *     is complete. A file ending in a trailing newline makes the
+ *     assistant's `split("\n")` count a phantom final "line", so
+ *     canonical sequential paging ends with a notice demanding a
+ *     redundant read of that empty line; tolerate it.
+ */
+export function defaultWindowTruncations(
+  reads: FileReadCall[],
+): FileReadCall[] {
+  return reads.filter(
+    (read) =>
+      read.truncated !== undefined &&
+      read.limit === undefined &&
+      read.truncated.lastLineReturned < read.truncated.totalLines - 1,
+  );
+}
+
+/**
+ * Whether the run kept making forward progress after default-window
+ * truncation, instead of re-reading from the top or abandoning the file.
+ *
+ * CONTRACT: a gating truncated read (see `defaultWindowTruncations`) is
+ * "resumed" when a LATER non-empty read of the same path advances
+ * coverage past the truncated window — either that later read is itself
+ * truncated further into the file (`lastLineReturned` strictly greater),
+ * or it carries no truncation notice at all (the notice appears on every
+ * windowed read that stops short of the file's last line, so a
+ * notice-free result ran through to the end). Judging progress from the
+ * result's own truncation state rather than offset arithmetic
+ * deliberately accepts defensive overlap resumes (an `offset` at or
+ * before `lastLineReturned` that still reads new lines) and rejects a
+ * re-read of the same top window, which truncates at the same line
+ * again.
  *
  * Takes `fileReadCalls` output, which is in stream order.
  */
 export function resumeOffsetHonored(reads: FileReadCall[]): boolean {
+  const gating = new Set(defaultWindowTruncations(reads));
   return reads.every((read, index) => {
-    if (read.truncated === undefined) return true;
-    const resumeAt = read.truncated.lastLineReturned + 1;
+    const cut = read.truncated;
+    if (cut === undefined || !gating.has(read)) return true;
     return reads
       .slice(index + 1)
       .some(
         (later) =>
           later.path === read.path &&
-          later.offset !== undefined &&
-          later.offset >= resumeAt,
+          later.resultChars > 0 &&
+          (later.truncated === undefined ||
+            later.truncated.lastLineReturned > cut.lastLineReturned),
       );
   });
 }

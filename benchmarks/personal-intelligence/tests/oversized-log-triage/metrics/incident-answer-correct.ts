@@ -1,3 +1,4 @@
+import { mentionsStandaloneNumber } from "../../../../../src/lib/common-metrics/number-mention";
 import {
   readAssistantNarration,
   readTranscript,
@@ -14,12 +15,12 @@ import {
 const METRIC_NAME = "incident-answer-correct";
 
 /**
- * Matches a standalone number: not embedded in a longer number, a
- * decimal, or a clock time (the trap count 14 would otherwise match a
- * quoted timestamp like "00:14:03").
+ * A count mention: standalone (not inside a longer number or a decimal
+ * like "47.5"), with the clock-time guard on — the trap count 14 must
+ * not match a quoted timestamp like "00:14:03".
  */
 function mentionsNumber(text: string, value: number): boolean {
-  return new RegExp(`(?<![\\d.:])${value}(?![\\d:])`).test(text);
+  return mentionsStandaloneNumber(text, value, { clockTime: true });
 }
 
 /**

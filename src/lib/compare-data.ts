@@ -12,6 +12,8 @@
  */
 import { z } from "zod";
 
+import { renderTable } from "./text-table";
+
 // ---------------------------------------------------------------------------
 // Export row schemas (schemaVersion 2 — see src/commands/export.ts)
 // ---------------------------------------------------------------------------
@@ -460,22 +462,6 @@ function ratioCell(
   if (b === undefined) return `${fmt(a)} → —`;
   const suffix = ratio === undefined ? "" : ` (${ratio.toFixed(2)}x)`;
   return `${fmt(a)} → ${fmt(b)}${suffix}`;
-}
-
-function renderTable(header: string[], rows: string[][]): string {
-  const widths = header.map((h, col) =>
-    Math.max(h.length, ...rows.map((row) => row[col].length)),
-  );
-  const line = (cells: string[]) =>
-    cells
-      .map((c, col) => c.padEnd(widths[col]))
-      .join("  ")
-      .trimEnd();
-  return [
-    line(header),
-    line(widths.map((w) => "-".repeat(w))),
-    ...rows.map(line),
-  ].join("\n");
 }
 
 function renderMarkdown(header: string[], rows: string[][]): string {

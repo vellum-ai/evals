@@ -76,6 +76,22 @@ describe("lab-freezer totals-correct grading", () => {
     expect(result.carriesNaiveSum).toBe(true);
   });
 
+  test("rounded spellings of the un-reconciled sum still carry the tell", () => {
+    // GIVEN memos that rounded the stray-decimal sum before writing it:
+    // true 2-dp rounding, the float-artifact toFixed spelling, nearest
+    // integer, and the truncated integer part
+    for (const spelling of ["11250.78", "11250.77", "11251", "11250"]) {
+      const memo = `${CORRECT_MEMO}\n\nSummed as written: ${spelling} µL.`;
+      expect(gradeTotals(memo).carriesNaiveSum).toBe(true);
+    }
+  });
+
+  test("a nearby-but-different number is not the naive sum", () => {
+    // GIVEN a figure none of the roundings produce
+    const memo = `${CORRECT_MEMO}\n\nBudgeted usage was 11249 µL.`;
+    expect(gradeTotals(memo).carriesNaiveSum).toBe(false);
+  });
+
   test("thousands separators and bare digits both match", () => {
     // GIVEN the totals written without separators
     const bare = "Tris-HCl 2850, EDTA 2975, SDS 3100, Glycerol 3000";

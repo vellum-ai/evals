@@ -274,11 +274,12 @@ export function classifyScopeMentions(
 
   for (const name of names) {
     const needle = name.toLowerCase();
-    const token = wholeTokenPattern(name);
+    const token =
+      options.wholeToken === true ? wholeTokenPattern(name) : undefined;
     const mentionsName = (line: string): boolean =>
-      options.wholeToken === true
-        ? token.test(line)
-        : line.toLowerCase().includes(needle);
+      token === undefined
+        ? line.toLowerCase().includes(needle)
+        : token.test(line);
     const amount = amounts?.[name];
     lines.forEach((line, index) => {
       if (!mentionsName(line)) return;

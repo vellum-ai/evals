@@ -137,11 +137,14 @@ describe("path canonicalization", () => {
       direct("file_read", { path: "catalog/price-table.ts" }),
       direct("file_read", { path: "./catalog/price-table.ts" }),
       direct("file_read", { path: "/workspace//catalog/price-table.ts" }),
+      // Dot segment inside the prefix: the ./ strip must run AFTER the
+      // /workspace/ strip, or this spelling forks a second identity.
+      direct("file_read", { path: "/workspace/./catalog/price-table.ts" }),
     ]);
     expect(reads.map((read) => read.path)).toEqual(
-      Array.from({ length: 4 }, () => "catalog/price-table.ts"),
+      Array.from({ length: 5 }, () => "catalog/price-table.ts"),
     );
-    expect(readsPerFile(reads).get("catalog/price-table.ts")).toBe(4);
+    expect(readsPerFile(reads).get("catalog/price-table.ts")).toBe(5);
   });
 
   test("paths outside the workspace keep their absolute spelling", () => {

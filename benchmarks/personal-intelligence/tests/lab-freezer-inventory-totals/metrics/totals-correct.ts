@@ -11,6 +11,21 @@ import {
 const METRIC_NAME = "totals-correct";
 
 /**
+ * Spellings of the un-reconciled sum a memo might carry: exact
+ * (11250.775), rounded to 2 dp — both true decimal rounding (11250.78)
+ * and the float-artifact `toFixed` spelling (11250.77) — and the integer
+ * roundings (11251 rounded, 11250 truncated). A memo that rounded the
+ * stray-decimal number still carries the tell.
+ */
+const NAIVE_SUM_SPELLINGS = [
+  NAIVE_SUM_IF_TRAPS_MISSED,
+  Math.round(NAIVE_SUM_IF_TRAPS_MISSED * 100) / 100,
+  Number(NAIVE_SUM_IF_TRAPS_MISSED.toFixed(2)),
+  Math.round(NAIVE_SUM_IF_TRAPS_MISSED),
+  Math.trunc(NAIVE_SUM_IF_TRAPS_MISSED),
+];
+
+/**
  * The pure half of the metric: grade a memo's numbers.
  *
  * Four equally weighted checks, one per reagent. Getting these right
@@ -44,11 +59,11 @@ export function gradeTotals(memo: string): {
   return {
     perReagent,
     grandTotalStated: mentionsStandaloneNumber(memo, GRAND_TOTAL_UL),
-    // The full stray-decimal sum, or its truncated integer part — a memo
-    // that rounded the un-reconciled number still carries the tell.
-    carriesNaiveSum:
-      mentionsStandaloneNumber(memo, NAIVE_SUM_IF_TRAPS_MISSED) ||
-      mentionsStandaloneNumber(memo, Math.trunc(NAIVE_SUM_IF_TRAPS_MISSED)),
+    // The stray-decimal sum in any spelling — exact, 2-dp rounded, or
+    // integer-rounded ({@link NAIVE_SUM_SPELLINGS}).
+    carriesNaiveSum: NAIVE_SUM_SPELLINGS.some((spelling) =>
+      mentionsStandaloneNumber(memo, spelling),
+    ),
   };
 }
 

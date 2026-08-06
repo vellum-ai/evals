@@ -43,7 +43,8 @@ const METRIC_NAME = "spool-recovery";
  * from lucky.
  */
 export function gradeSpoolRecovery(events: AgentEvent[]): MetricResult {
-  const { reads, codeSearchCalls } = observedReadScope(events);
+  const { reads, codeSearchCalls, subagentSpawnCount, scope } =
+    observedReadScope(events);
   const derefs = reads.filter(isSpoolDerefRead);
   const successfulDerefCount = derefs.filter(
     (read) => read.resultChars > 0 && !read.isError,
@@ -72,6 +73,8 @@ export function gradeSpoolRecovery(events: AgentEvent[]): MetricResult {
         successfulDerefCount,
         fileReadCount: reads.length,
         codeSearchCalls,
+        subagentSpawnCount,
+        scope,
         strategy,
       },
     };
@@ -110,6 +113,8 @@ export function gradeSpoolRecovery(events: AgentEvent[]): MetricResult {
       successfulDerefCount,
       fileReadCount: reads.length,
       codeSearchCalls,
+      subagentSpawnCount,
+      scope,
     },
   };
 }

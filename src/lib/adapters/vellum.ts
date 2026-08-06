@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -94,13 +95,43 @@ function selectProviderEnv(source: NodeJS.ProcessEnv): Record<string, string> {
 }
 
 /**
- * Absolute path to the vellum-assistant repo root, derived from this file's
- * location (`evals/src/lib/adapters/vellum.ts` → repo root via four `..`s).
- * Passed to `vellum hatch --source <path>` so each eval run builds CLI/daemon
- * images from the local source tree.
+ * Absolute path to the vellum-assistant source tree the assistant-under-test
+ * is built from. Passed to `vellum hatch --source <path>` so each eval run
+ * builds CLI/daemon images from that source tree.
+ *
+ * When `EVALS_ASSISTANT_SOURCE` is set it wins: the value is resolved to an
+ * absolute path and validated to be an existing vellum-assistant checkout or
+ * worktree (it must contain `assistant/package.json` — the target checkout
+ * does NOT need an `evals/` directory inside it). This is what lets a
+ * baseline-at-commit run point at a parent-repo `git worktree` pinned to an
+ * older assistant commit. Validation throws a descriptive error up front, so
+ * a bad path fails fast before any Docker work.
+ *
+ * Otherwise falls back to the parent repo of this evals checkout, derived
+ * from this file's location (`evals/src/lib/adapters/vellum.ts` → repo root
+ * via four `..`s).
  */
-function repoRootFromAdapter(): string {
-  return resolve(import.meta.dir, "..", "..", "..", "..");
+export function resolveAssistantSource(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const override = env.EVALS_ASSISTANT_SOURCE?.trim();
+  if (!override) {
+    return resolve(import.meta.dir, "..", "..", "..", "..");
+  }
+  const source = resolve(override);
+  if (!existsSync(source)) {
+    throw new Error(
+      `EVALS_ASSISTANT_SOURCE points at "${source}", which does not exist. ` +
+        `Set it to the absolute path of a vellum-assistant checkout or worktree, or unset it to use the parent repo of this evals checkout.`,
+    );
+  }
+  if (!existsSync(join(source, "assistant", "package.json"))) {
+    throw new Error(
+      `EVALS_ASSISTANT_SOURCE points at "${source}", which is not a vellum-assistant source tree (missing assistant/package.json). ` +
+        `Set it to the root of a vellum-assistant checkout or worktree.`,
+    );
+  }
+  return source;
 }
 
 function shellWords(command: string): string[] {
@@ -354,6 +385,12 @@ export class VellumAgent implements BaseAgent {
     // - `jail.stop()` is ALWAYS called, LAST. It's a no-op if we never
     //   assigned `this.jail` (i.e. we died before creating the jail), and
     //   it removes the jail container then its owned network.
+
+    // Resolve (and validate) the assistant source tree before any Docker
+    // work, so a bad EVALS_ASSISTANT_SOURCE fails fast instead of after a
+    // jail + hatch attempt.
+    const assistantSource = resolveAssistantSource(this.processEnv);
+
     let hatchSucceeded = false;
     try {
       // Allocate the host port the gateway will be reachable on before
@@ -406,12 +443,13 @@ export class VellumAgent implements BaseAgent {
         // install` traffic from disk instead of letting it egress to
         // github.com. Omitted in live mode so the install reaches real
         // public GitHub (see `livePluginInstall` above). Outside live mode
-        // the runner always runs inside the repo (`repoRootFromAdapter()`
-        // drives the hatch `--source` arg below), so the fixtures path is
-        // resolvable here.
+        // the fixtures come from the same source tree that drives the hatch
+        // `--source` arg below (`resolveAssistantSource()`), so the fixtures
+        // path is resolvable here and stays consistent with the
+        // assistant-under-test.
         pluginFixturesDir: livePluginInstall
           ? undefined
-          : resolve(repoRootFromAdapter(), "plugins"),
+          : resolve(assistantSource, "plugins"),
       });
 
       // Forward LLM provider API keys from the eval process env into the
@@ -434,7 +472,7 @@ export class VellumAgent implements BaseAgent {
           "--remote",
           "docker",
           "--source",
-          repoRootFromAdapter(),
+          assistantSource,
           "--name",
           this.id,
           "--netns-container",

@@ -82,6 +82,24 @@ describe("gradePatchNotRewrite", () => {
     ]);
     expect(result.score).toBe(0);
   });
+
+  test("a rewrite via the dot-relative spelling is still a rewrite", () => {
+    // The bug the shared canonicalization fixes: `./src/ledger.ts` was
+    // not in the exact-string preexisting set, so a wholesale rewrite of
+    // the staged file scored 1 as a "new-file creation".
+    const result = gradePatchNotRewrite([
+      toolCall("file_write", { path: "./src/ledger.ts" }),
+    ]);
+    expect(result.score).toBe(0);
+  });
+
+  test("an edit via the absolute spelling still marks the target edited", () => {
+    const result = gradePatchNotRewrite([
+      toolCall("file_edit", { path: "/workspace/src/ledger.ts" }),
+    ]);
+    expect(result.score).toBe(1);
+    expect(result.metadata?.targetEdited).toBe(true);
+  });
 });
 
 describe("gradeLineDiff", () => {

@@ -21,6 +21,7 @@
  */
 
 import type { AgentEvent } from "../adapter";
+import { readSubagentSpawns } from "./subagent-activity";
 
 /** One normalized tool call (envelope-unwrapped), in stream order. */
 export interface ToolCall {
@@ -30,18 +31,27 @@ export interface ToolCall {
   input: Record<string, unknown>;
   /** The paired tool result's text, when one arrived. */
   resultText?: string;
+  /** True when the paired result carried `isError: true` — the call failed. */
+  isError?: boolean;
   /** The `tool_use_start` event's stamp. */
   emittedAt?: string;
 }
 
 /** One `file_read`/`host_file_read` call, with what its result showed. */
 export interface FileReadCall {
-  /** Target path, backslashes normalized to forward slashes. */
+  /** Target path in canonical form — see {@link normalizePath}. */
   path: string;
   offset?: number;
   limit?: number;
   /** Length of the paired result text (0 when no result arrived). */
   resultChars: number;
+  /**
+   * True when the paired result carried `isError: true` (file not found,
+   * permission denied, …). An errored result has text — the error
+   * message — so `resultChars > 0` alone must never be read as "the
+   * content came back".
+   */
+  isError: boolean;
   /**
    * Present when the result carries the assistant's truncation notice
    * `[Truncated: showing through line N of M. Read on with offset=N+1,
@@ -122,12 +132,30 @@ function readNumber(value: unknown): number | undefined {
 }
 
 /**
- * Backslashes → forward slashes, mirroring the assistant's
- * `isSpooledToolResultRead`, whose spool paths come from `join` and are
- * backslash-separated on Windows.
+ * Canonicalize a path so the SAME file has ONE identity regardless of
+ * how a tool call spelled it. Real runs mix workspace-relative
+ * (`catalog/price-table.ts`), dot-relative (`./src/ledger.ts`), and
+ * container-absolute (`/workspace/catalog/price-table.ts`) spellings;
+ * exact-string matching across them scored a real resume as "abandoned"
+ * and misread a rewrite as a new-file creation.
+ *
+ * CANONICAL FORM (documented so metrics and tests agree on it):
+ *   - forward slashes (backslashes normalized, mirroring the assistant's
+ *     `isSpooledToolResultRead`, whose spool paths come from `join` and
+ *     are backslash-separated on Windows), duplicate slashes collapsed
+ *   - no leading `./`
+ *   - WORKSPACE-RELATIVE: the `/workspace/` prefix is stripped, so
+ *     `/workspace/catalog/x.ts` and `catalog/x.ts` are the same identity
+ *   - paths outside the workspace (`/var/log/app.log`) keep their
+ *     absolute spelling
  */
 function normalizePath(path: string): string {
-  return path.replace(/\\/g, "/");
+  let canonical = path.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+  while (canonical.startsWith("./")) canonical = canonical.slice(2);
+  if (canonical.startsWith("/workspace/")) {
+    canonical = canonical.slice("/workspace/".length);
+  }
+  return canonical;
 }
 
 /** Target path of a file tool call: `path` (workspace tools) or `file_path`. */
@@ -192,6 +220,9 @@ export function readToolCalls(events: AgentEvent[]): ToolCall[] {
     if (typeof message.result === "string") {
       target.call.resultText = message.result;
     }
+    if (typeof message.isError === "boolean") {
+      target.call.isError = message.isError;
+    }
   }
 
   return calls;
@@ -216,6 +247,7 @@ export function fileReadCalls(events: AgentEvent[]): FileReadCall[] {
       offset: readNumber(call.input.offset),
       limit: readNumber(call.input.limit),
       resultChars: result.length,
+      isError: call.isError === true,
       truncated:
         notice === null
           ? undefined
@@ -233,18 +265,14 @@ export function fileReadCalls(events: AgentEvent[]): FileReadCall[] {
 /**
  * Whether a read targets a `.tool-results/` spool file — a deref that
  * pages previously omitted content back in, not a workspace slice.
+ * Canonical paths are workspace-relative, so a spool dir at the
+ * workspace root appears as a leading path segment, not a `/`-framed one.
  */
 export function isSpoolDerefRead(read: FileReadCall): boolean {
-  return read.path.includes(`/${TOOL_RESULT_DIR}/`);
-}
-
-/**
- * File reads that dereference a spooled result. Takes `fileReadCalls`
- * output (like `resumeOffsetHonored`) so callers walk the event stream
- * once and slice the same array many ways.
- */
-export function spoolDerefReads(reads: FileReadCall[]): FileReadCall[] {
-  return reads.filter(isSpoolDerefRead);
+  return (
+    read.path.startsWith(`${TOOL_RESULT_DIR}/`) ||
+    read.path.includes(`/${TOOL_RESULT_DIR}/`)
+  );
 }
 
 /**
@@ -272,7 +300,7 @@ export function readsPerFile(reads: FileReadCall[]): Map<string, number> {
  */
 export function editStyle(
   events: AgentEvent[],
-  opts?: { preexistingPaths?: string[] },
+  opts?: { preexistingPaths?: readonly string[] },
 ): EditStyle {
   const known =
     opts?.preexistingPaths === undefined
@@ -330,9 +358,10 @@ export function defaultWindowTruncations(
  * truncation, instead of re-reading from the top or abandoning the file.
  *
  * CONTRACT: a gating truncated read (see `defaultWindowTruncations`) is
- * "resumed" when a LATER non-empty read of the same path advances
- * coverage past the truncated window — either that later read is itself
- * truncated further into the file (`lastLineReturned` strictly greater),
+ * "resumed" when a LATER non-empty, non-errored read of the same path
+ * advances coverage past the truncated window — either that later read
+ * is itself truncated further into the file (`lastLineReturned` strictly
+ * greater),
  * or it carries no truncation notice at all (the notice appears on every
  * windowed read that stops short of the file's last line, so a
  * notice-free result ran through to the end). Judging progress from the
@@ -349,14 +378,65 @@ export function resumeOffsetHonored(reads: FileReadCall[]): boolean {
   return reads.every((read, index) => {
     const cut = read.truncated;
     if (cut === undefined || !gating.has(read)) return true;
-    return reads
-      .slice(index + 1)
-      .some(
-        (later) =>
-          later.path === read.path &&
-          later.resultChars > 0 &&
-          (later.truncated === undefined ||
-            later.truncated.lastLineReturned > cut.lastLineReturned),
-      );
+    return reads.slice(index + 1).some(
+      (later) =>
+        later.path === read.path &&
+        later.resultChars > 0 &&
+        // An errored result ("file not found") has non-empty text and
+        // no truncation notice — it must not read as "ran to EOF".
+        !later.isError &&
+        (later.truncated === undefined ||
+          later.truncated.lastLineReturned > cut.lastLineReturned),
+    );
   });
+}
+
+/** What a parent event stream lets a read-shaped metric observe. */
+export interface ObservedReadScope {
+  /** Every observable file read, in stream order ({@link fileReadCalls}). */
+  reads: FileReadCall[];
+  /** `code_search`/`host_code_search` calls ({@link CODE_SEARCH_TOOLS}). */
+  codeSearchCalls: number;
+  /** Subagent spawns — their internal reads never appear in this stream. */
+  subagentSpawnCount: number;
+  /** One-line statement of what this stream can and cannot see. */
+  scope: string;
+}
+
+/**
+ * The shared observability scaffolding for metrics that grade reading
+ * behaviour (read-economy, slice-economy, spool-recovery): the file
+ * reads, the search-call count, the subagent-spawn count, and the
+ * `scope` sentence every such metric records so the report can tell
+ * "read nothing" from "read where this stream cannot see".
+ */
+export function observedReadScope(events: AgentEvent[]): ObservedReadScope {
+  const reads = fileReadCalls(events);
+  const subagentSpawnCount = readSubagentSpawns(events).length;
+  const codeSearchCalls = readToolCalls(events).filter((call) =>
+    CODE_SEARCH_TOOLS.has(call.name),
+  ).length;
+  const scope =
+    subagentSpawnCount > 0
+      ? "parent-events-only: subagent-internal tool calls do not appear in " +
+        "the parent's event stream, so only the parent's own reads are measured."
+      : "parent-events-only: no subagents were spawned, so every read is " +
+        "observable here.";
+  return { reads, codeSearchCalls, subagentSpawnCount, scope };
+}
+
+/**
+ * The shared two-branch `applicable: false` reason for a run with no
+ * observable reads: delegated runs are "not measured rather than
+ * under-counted", read-free runs have nothing to measure. Each metric
+ * supplies its own consequence clauses so the wording stays per-metric
+ * while the policy stays shared.
+ */
+export function noObservableReadsReason(
+  observed: Pick<ObservedReadScope, "codeSearchCalls" | "subagentSpawnCount">,
+  consequence: { delegated: string; noReads: string },
+): string {
+  return observed.subagentSpawnCount > 0
+    ? `Not applicable: no file reads are observable in the parent event stream and ${observed.subagentSpawnCount} subagent(s) were spawned — the reading happened where this stream cannot see it, so ${consequence.delegated}.`
+    : `Not applicable: the run performed no file reads (${observed.codeSearchCalls} code_search call(s)) — ${consequence.noReads}.`;
 }

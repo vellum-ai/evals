@@ -143,6 +143,71 @@ describe("oversized-log-triage spool-recovery", () => {
     });
   });
 
+  test("an ERRORED deref is not a recovery", () => {
+    // GIVEN a deref whose non-empty result is an error message — the
+    // spooled content never came back
+    const events = [
+      direct("file_read", { path: "/workspace/logs/gateway.log" }),
+      result(SPOOL_STUB_RESULT),
+      direct("file_read", { path: DEREF_PATH }),
+      {
+        message: {
+          type: "tool_result",
+          result: "Error: file not found",
+          isError: true,
+        },
+      } satisfies AgentEvent,
+    ];
+
+    const graded = gradeSpoolRecovery(events);
+
+    expect(graded.score).toBe(0);
+    expect(graded.metadata).toMatchObject({
+      derefCount: 1,
+      successfulDerefCount: 0,
+      recoveredCount: 0,
+    });
+  });
+
+  test("an ERRORED ranged re-read is not a recovery either", () => {
+    const events = [
+      direct("file_read", { path: "/workspace/logs/gateway.log" }),
+      result(SPOOL_STUB_RESULT),
+      direct("file_read", {
+        path: "/workspace/logs/gateway.log",
+        offset: 38000,
+        limit: 500,
+      }),
+      {
+        message: {
+          type: "tool_result",
+          result: "Error: offset beyond end of file",
+          isError: true,
+        },
+      } satisfies AgentEvent,
+    ];
+
+    expect(gradeSpoolRecovery(events).score).toBe(0);
+  });
+
+  test("a deref via another spelling of the spool path still recovers", () => {
+    // GIVEN the stub names the absolute spool path but the deref read
+    // used the workspace-relative spelling
+    const events = [
+      direct("file_read", { path: "/workspace/logs/gateway.log" }),
+      result(SPOOL_STUB_RESULT),
+      direct("file_read", {
+        path: ".conversations/c1/.tool-results/ab12cd34ef56.txt",
+      }),
+      result("the incident window, inline"),
+    ];
+
+    const graded = gradeSpoolRecovery(events);
+
+    expect(graded.score).toBe(1);
+    expect(graded.metadata).toMatchObject({ recoveredCount: 1 });
+  });
+
   test("never spooled is not applicable, and names the strategy", () => {
     // GIVEN a search-first run that never fat-read the log
     const events = [

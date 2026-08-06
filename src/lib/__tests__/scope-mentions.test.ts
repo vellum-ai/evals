@@ -244,4 +244,36 @@ describe("classifyScopeMentions with requireAmount", () => {
     expect(result.reported).toEqual([]);
     expect(result.cleared).toEqual(["Bracken Labs"]);
   });
+
+  test("wholeToken keeps a name from matching inside a longer token", () => {
+    // GIVEN service-style identifiers that nest inside longer ones
+    const text = "We ship auth-api-v2 and oauth-api next week.";
+
+    // WHEN classified with token-bounded matching
+    const result = classifyScopeMentions(text, ["auth-api"], {
+      wholeToken: true,
+    });
+
+    // THEN neither nested occurrence is a mention at all
+    expect(result.mentions).toEqual([]);
+
+    // ...while the default substring match would have found both lines
+    expect(classifyScopeMentions(text, ["auth-api"]).mentions).not.toEqual([]);
+  });
+
+  test("extraExclusionCues clear framings the shared list does not know", () => {
+    // GIVEN a caller-supplied cue in the scenario's own vocabulary
+    const text = "profiles-api resolves to 20s and stays under the threshold.";
+
+    // WHEN classified with and without the extra cue
+    const withCue = classifyScopeMentions(text, ["profiles-api"], {
+      extraExclusionCues: ["stays? under"],
+    });
+    const withoutCue = classifyScopeMentions(text, ["profiles-api"]);
+
+    // THEN only the caller's cue clears the mention
+    expect(withCue.reported).toEqual([]);
+    expect(withCue.cleared).toEqual(["profiles-api"]);
+    expect(withoutCue.reported).toEqual(["profiles-api"]);
+  });
 });

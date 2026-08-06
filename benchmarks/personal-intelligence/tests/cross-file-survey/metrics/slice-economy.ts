@@ -4,12 +4,11 @@ import {
   type MetricInput,
   type MetricResult,
 } from "../../../../../src/lib/metrics";
-import { readSubagentSpawns } from "../../../../../src/lib/common-metrics/subagent-activity";
 import {
-  CODE_SEARCH_TOOLS,
-  fileReadCalls,
   isSpoolDerefRead,
-  readToolCalls,
+  noObservableReadsReason,
+  observedReadScope,
+  readsPerFile,
 } from "../../../../../src/lib/common-metrics/tool-activity";
 
 const METRIC_NAME = "slice-economy";
@@ -51,40 +50,20 @@ export function economyScore(meanReadsPerFile: number): number {
  * mean and counted separately in metadata.
  */
 export function gradeSliceEconomy(events: AgentEvent[]): MetricResult {
-  const codeSearchCalls = readToolCalls(events).filter((call) =>
-    CODE_SEARCH_TOOLS.has(call.name),
-  ).length;
-  const subagentSpawnCount = readSubagentSpawns(events).length;
+  const observed = observedReadScope(events);
+  const { reads, codeSearchCalls, subagentSpawnCount, scope } = observed;
 
-  // Reads-per-file, as in `readsPerFile`, but split so spool derefs stay
-  // out of the mean.
-  const perFileReadCounts: Record<string, number> = {};
-  let workspaceReadCount = 0;
-  let spoolDerefReadCount = 0;
-  let spooledReadCount = 0;
-  for (const read of fileReadCalls(events)) {
-    if (read.spooled) spooledReadCount += 1;
-    if (isSpoolDerefRead(read)) {
-      spoolDerefReadCount += 1;
-    } else {
-      perFileReadCounts[read.path] = (perFileReadCounts[read.path] ?? 0) + 1;
-      workspaceReadCount += 1;
-    }
-  }
+  // Spool derefs stay out of the mean: filter them, then count reads per
+  // file with the shared map.
+  const workspaceReads = reads.filter((read) => !isSpoolDerefRead(read));
+  const perFileReadCounts = Object.fromEntries(readsPerFile(workspaceReads));
   const distinctFiles = Object.keys(perFileReadCounts).length;
-
-  const scope =
-    subagentSpawnCount > 0
-      ? "parent-events-only: subagent-internal tool calls do not appear in " +
-        "the parent's event stream, so only the parent's own reads are graded."
-      : "parent-events-only: no subagents were spawned, so every read is " +
-        "observable here.";
 
   const metadata = {
     perFileReadCounts,
     codeSearchCalls,
-    spooledReadCount,
-    spoolDerefReadCount,
+    spooledReadCount: reads.filter((read) => read.spooled).length,
+    spoolDerefReadCount: reads.length - workspaceReads.length,
     subagentSpawnCount,
     scope,
   };
@@ -94,22 +73,22 @@ export function gradeSliceEconomy(events: AgentEvent[]): MetricResult {
       name: METRIC_NAME,
       score: 0,
       applicable: false,
-      reason:
-        subagentSpawnCount > 0
-          ? `Not applicable: no file reads are observable in the parent event stream and ${subagentSpawnCount} subagent(s) were spawned — the reading happened where this stream cannot see it, so it is not scored rather than under-counted.`
-          : `Not applicable: the run performed no file reads (${codeSearchCalls} code_search call(s)) — there is no read pattern to grade.`,
+      reason: noObservableReadsReason(observed, {
+        delegated: "it is not scored rather than under-counted",
+        noReads: "there is no read pattern to grade",
+      }),
       metadata,
     };
   }
 
-  const mean = workspaceReadCount / distinctFiles;
+  const mean = workspaceReads.length / distinctFiles;
   const score = economyScore(mean);
   return {
     name: METRIC_NAME,
     score,
     reason:
       score === 1
-        ? `Read ${distinctFiles} file(s) in ${workspaceReadCount} file_read call(s) — about one pass per file.`
+        ? `Read ${distinctFiles} file(s) in ${workspaceReads.length} file_read call(s) — about one pass per file.`
         : `Averaged ${mean.toFixed(2)} file_read calls per distinct file across ${distinctFiles} file(s) — the many-small-slices pattern (full marks at ≤ ${FULL_MARKS_MEAN}, zero at ≥ ${ZERO_MARKS_MEAN}).`,
     metadata: { ...metadata, meanReadsPerFile: Number(mean.toFixed(3)) },
   };

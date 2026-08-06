@@ -1,10 +1,6 @@
+import { readAssistantAnswerText } from "../../../../../src/lib/common-metrics/assistant-answer";
 import { mentionsStandaloneNumber } from "../../../../../src/lib/common-metrics/number-mention";
-import {
-  readAssistantNarration,
-  readTranscript,
-  type MetricInput,
-  type MetricResult,
-} from "../../../../../src/lib/metrics";
+import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
 import {
   CORRECT_ERROR_COUNT,
   FIRST_ERROR_MESSAGE,
@@ -90,15 +86,7 @@ export function gradeIncidentAnswer(answer: string): MetricResult {
 export default async function scoreIncidentAnswer(
   input: MetricInput,
 ): Promise<MetricResult> {
-  // Prefer the persisted transcript (the answer as the user saw it);
-  // fall back to the full narration for runs whose responses never made
-  // it into the transcript.
-  const transcript = await readTranscript(input.runId);
-  const answer = transcript
-    .filter((turn) => turn.role === "assistant")
-    .map((turn) => turn.content)
-    .join("\n");
-  return gradeIncidentAnswer(
-    answer.trim() === "" ? await readAssistantNarration(input.runId) : answer,
-  );
+  // Transcript preferred, narration fallback — the shared policy in
+  // `assistant-answer.ts`.
+  return gradeIncidentAnswer(await readAssistantAnswerText(input.runId));
 }

@@ -1,9 +1,6 @@
+import { readAssistantAnswerText } from "../../../../../src/lib/common-metrics/assistant-answer";
 import { mentionsStandaloneNumber } from "../../../../../src/lib/common-metrics/number-mention";
-import {
-  readTranscript,
-  type MetricInput,
-  type MetricResult,
-} from "../../../../../src/lib/metrics";
+import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
 import { CORRECT_TOTAL, DEPRECATED_TABLE_TOTAL } from "../constants";
 
 const METRIC_NAME = "answer-correct";
@@ -38,12 +35,7 @@ export function gradeAnswer(text: string): {
 export default async function scoreAnswerCorrect(
   input: MetricInput,
 ): Promise<MetricResult> {
-  const transcript = await readTranscript(input.runId);
-  const answer = transcript
-    .filter((turn) => turn.role === "assistant")
-    .map((turn) => turn.content)
-    .join("\n");
-
+  const answer = await readAssistantAnswerText(input.runId);
   const { matched, mentionsDeprecated } = gradeAnswer(answer);
   const reason =
     matched === "correct"

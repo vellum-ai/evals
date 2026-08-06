@@ -49,4 +49,49 @@ describe("mentionsStandaloneNumber", () => {
       mentionsStandaloneNumber("Error count:14", 14, { clockTime: true }),
     ).toBe(true);
   });
+
+  test("a decimal value requires its exact fraction", () => {
+    // lab-freezer's stray-decimal naive sum, in memo formattings
+    expect(mentionsStandaloneNumber("Total: 11250.775 µL", 11250.775)).toBe(
+      true,
+    );
+    expect(mentionsStandaloneNumber("Total: 11,250.775 µL", 11250.775)).toBe(
+      true,
+    );
+    expect(mentionsStandaloneNumber("Total: 11250.7756", 11250.775)).toBe(
+      false,
+    );
+    expect(mentionsStandaloneNumber("Total: 11250 µL", 11250.775)).toBe(false);
+    expect(mentionsStandaloneNumber("Total: 211250.775", 11250.775)).toBe(
+      false,
+    );
+  });
+
+  test("decimalComma accepts €-style exact-zero tails", () => {
+    // contractor's hand-rolled matcher accepted 357,00 — the port must too
+    expect(
+      mentionsStandaloneNumber("€357,00 recoverable", 357, {
+        decimalComma: true,
+      }),
+    ).toBe(true);
+    expect(
+      mentionsStandaloneNumber("€357.00 recoverable", 357, {
+        decimalComma: true,
+      }),
+    ).toBe(true);
+    expect(mentionsStandaloneNumber("€357", 357, { decimalComma: true })).toBe(
+      true,
+    );
+  });
+
+  test("decimalComma refuses a comma-decimal that changes the value", () => {
+    // The `\b` bug class: a boundary holds before "," and "." alike, so
+    // 357 matched inside "357,50". The guard must treat both as decimals.
+    expect(
+      mentionsStandaloneNumber("€357,50", 357, { decimalComma: true }),
+    ).toBe(false);
+    expect(
+      mentionsStandaloneNumber("€357.50", 357, { decimalComma: true }),
+    ).toBe(false);
+  });
 });

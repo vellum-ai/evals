@@ -5,13 +5,11 @@ import {
   type MetricResult,
   type MetricScorer,
 } from "../metrics";
-import { readSubagentSpawns } from "./subagent-activity";
 import {
-  CODE_SEARCH_TOOLS,
-  fileReadCalls,
+  isSpoolDerefRead,
+  noObservableReadsReason,
+  observedReadScope,
   readsPerFile,
-  readToolCalls,
-  spoolDerefReads,
 } from "./tool-activity";
 
 const METRIC_NAME = "read-economy";
@@ -44,17 +42,8 @@ const METRIC_NAME = "read-economy";
  * inline" is only meaningful when reads were observable at all.
  */
 export function gradeReadEconomy(events: AgentEvent[]): MetricResult {
-  const reads = fileReadCalls(events);
-  const subagentSpawnCount = readSubagentSpawns(events).length;
-  const codeSearchCalls = readToolCalls(events).filter((call) =>
-    CODE_SEARCH_TOOLS.has(call.name),
-  ).length;
-  const scope =
-    subagentSpawnCount > 0
-      ? "parent-events-only: subagent-internal tool calls do not appear in " +
-        "the parent's event stream, so only the parent's own reads are measured."
-      : "parent-events-only: no subagents were spawned, so every read is " +
-        "observable here.";
+  const observed = observedReadScope(events);
+  const { reads, codeSearchCalls, subagentSpawnCount, scope } = observed;
 
   const defaultLimitReadCount = reads.filter(
     (read) => read.limit === undefined,
@@ -65,7 +54,7 @@ export function gradeReadEconomy(events: AgentEvent[]): MetricResult {
     readsPerFile: Object.fromEntries(readsPerFile(reads)),
     defaultLimitReadCount,
     spooledReadCount,
-    spoolDerefReadCount: spoolDerefReads(reads).length,
+    spoolDerefReadCount: reads.filter(isSpoolDerefRead).length,
     codeSearchCalls,
     subagentSpawnCount,
     scope,
@@ -76,10 +65,10 @@ export function gradeReadEconomy(events: AgentEvent[]): MetricResult {
       name: METRIC_NAME,
       score: 0,
       applicable: false,
-      reason:
-        subagentSpawnCount > 0
-          ? `Not applicable: no file reads are observable in the parent event stream and ${subagentSpawnCount} subagent(s) were spawned — the reading happened where this stream cannot see it, so inline load is not measured rather than under-counted.`
-          : `Not applicable: the run performed no file reads (${codeSearchCalls} code_search call(s)) — there is no inline read load to measure.`,
+      reason: noObservableReadsReason(observed, {
+        delegated: "inline load is not measured rather than under-counted",
+        noReads: "there is no inline read load to measure",
+      }),
       metadata,
     };
   }

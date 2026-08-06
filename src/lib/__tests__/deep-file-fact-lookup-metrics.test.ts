@@ -116,6 +116,23 @@ describe("deep-file-fact-lookup answer-correct grading", () => {
     expect(scored.score).toBe(0);
     expect(scored.metadata).toMatchObject({ matched: "deprecated-trap" });
   });
+
+  test("falls back to the streamed narration when the transcript is empty", async () => {
+    // GIVEN a run whose answer only ever streamed as text deltas — the
+    // hardening `oversized-log-triage` had that this sibling lacked
+    const runId = await freshRunId("narration");
+    await appendAssistantEvents(runId, [
+      {
+        message: {
+          type: "assistant_text_delta",
+          text: `The order total is $${withCommas(CORRECT_TOTAL)}.`,
+        },
+      },
+    ]);
+    const scored = await scoreAnswerCorrect({ runId });
+    expect(scored.score).toBe(1);
+    expect(scored.metadata).toMatchObject({ matched: "correct" });
+  });
 });
 
 describe("deep-file-fact-lookup truncation-paging grading", () => {

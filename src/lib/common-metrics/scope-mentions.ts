@@ -136,6 +136,21 @@ export interface ScopeMentionOptions {
    * € lives in the header. Only consulted when `requireAmount` is set.
    */
   amounts?: Readonly<Record<string, number>>;
+  /**
+   * Extra regex sources OR'd into the shared exclusion cue, for callers
+   * whose scenario frames exclusion in its own vocabulary — e.g.
+   * cross-file-survey's "resolves to 20s and stays under the threshold".
+   * Kept per-caller so this file's shared cue list doesn't accrete
+   * case-specific language that over-clears other suites.
+   */
+  extraExclusionCues?: readonly string[];
+  /**
+   * Match names as their own token (`billing-api` in "billing-api (95s)"
+   * but not inside `billing-api-v2` or `oauth-api`) instead of by bare
+   * substring. Use for machine-ish identifiers that nest inside longer
+   * ones; the default substring match suits multi-word vendor names.
+   */
+  wholeToken?: boolean;
 }
 
 /** One occurrence of a watched name, and how its context reads. */
@@ -190,6 +205,18 @@ function nearestHeadingAbove(lines: string[], index: number): string | null {
   return null;
 }
 
+/**
+ * Token-bounded name matcher: `name` as its own `[\w-]` token —
+ * `billing-api` in "billing-api (95s)" but not inside `billing-api-v2`
+ * or `oauth-api`. Shared with metrics that match service-style
+ * identifiers outside this classifier (e.g. survey-correct), so the
+ * boundary definition cannot drift between them.
+ */
+export function wholeTokenPattern(name: string): RegExp {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, "i");
+}
+
 /** True when `line` asserts an amount — currency-marked, or a known one. */
 function assertsAmount(line: string, amount: number | undefined): boolean {
   if (MONEY.test(line)) return true;
@@ -206,12 +233,13 @@ function clearingCue(
   index: number,
   amount: number | undefined,
   requireAmount: boolean,
+  exclusionCue: RegExp,
 ): string | null {
   const line = lines[index] ?? "";
   const excluded =
-    matchCue(EXCLUSION_CUE, line) ??
-    matchCue(EXCLUSION_CUE, leadInAbove(lines, index)) ??
-    matchCue(EXCLUSION_CUE, nearestHeadingAbove(lines, index));
+    matchCue(exclusionCue, line) ??
+    matchCue(exclusionCue, leadInAbove(lines, index)) ??
+    matchCue(exclusionCue, nearestHeadingAbove(lines, index));
   if (excluded) return excluded;
 
   const clean = matchCue(CLEAN_CUE, line);
@@ -225,24 +253,42 @@ function clearingCue(
 /**
  * Split `names` by how `text` treats them: reported as findings, or
  * cleared. Names absent from `text` appear in neither list. Matching is
- * case-insensitive and substring-based, so callers should pass
- * distinctive names.
+ * case-insensitive — substring-based by default (so callers should pass
+ * distinctive names), token-bounded under `wholeToken`.
  */
 export function classifyScopeMentions(
   text: string,
   names: readonly string[],
   options: ScopeMentionOptions = {},
 ): ScopeMentionReport {
-  const { requireAmount = false, amounts } = options;
+  const { requireAmount = false, amounts, extraExclusionCues } = options;
+  const exclusionCue =
+    extraExclusionCues === undefined || extraExclusionCues.length === 0
+      ? EXCLUSION_CUE
+      : new RegExp(
+          [EXCLUSION_CUE.source, ...extraExclusionCues].join("|"),
+          "i",
+        );
   const lines = text.split(/\r?\n/);
   const mentions: ScopeMention[] = [];
 
   for (const name of names) {
     const needle = name.toLowerCase();
+    const token = wholeTokenPattern(name);
+    const mentionsName = (line: string): boolean =>
+      options.wholeToken === true
+        ? token.test(line)
+        : line.toLowerCase().includes(needle);
     const amount = amounts?.[name];
     lines.forEach((line, index) => {
-      if (!line.toLowerCase().includes(needle)) return;
-      const clearedBy = clearingCue(lines, index, amount, requireAmount);
+      if (!mentionsName(line)) return;
+      const clearedBy = clearingCue(
+        lines,
+        index,
+        amount,
+        requireAmount,
+        exclusionCue,
+      );
       mentions.push({
         name,
         line: line.trim(),

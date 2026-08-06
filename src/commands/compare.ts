@@ -12,7 +12,7 @@
 import { readFile } from "node:fs/promises";
 
 import type { Command } from "commander";
-import { InvalidArgumentError } from "commander";
+import { Option } from "commander";
 
 import {
   compareExports,
@@ -21,17 +21,6 @@ import {
   type CompareAxis,
   type CompareFormat,
 } from "../lib/compare-data";
-
-function oneOf<T extends string>(name: string, allowed: readonly T[]) {
-  return (value: string): T => {
-    if (!(allowed as readonly string[]).includes(value)) {
-      throw new InvalidArgumentError(
-        `--${name} must be one of: ${allowed.join(", ")}`,
-      );
-    }
-    return value as T;
-  };
-}
 
 export function registerCompareCommand(program: Command): void {
   program
@@ -42,17 +31,18 @@ export function registerCompareCommand(program: Command): void {
     )
     .argument("<a>", "Baseline export (side A)")
     .argument("<b>", "Comparison export (side B)")
-    .option(
-      "--format <format>",
-      "Output format: table, md, or json",
-      oneOf<CompareFormat>("format", ["table", "md", "json"]),
-      "table",
+    .addOption(
+      new Option("--format <format>", "Output format")
+        .choices(["table", "md", "json"] satisfies CompareFormat[])
+        .default("table"),
     )
-    .option(
-      "--by <axis>",
-      "Comparison axis: test (per test × profile) or profile (aggregates)",
-      oneOf<CompareAxis>("by", ["test", "profile"]),
-      "test",
+    .addOption(
+      new Option(
+        "--by <axis>",
+        "Comparison axis: test (per test × profile) or profile (aggregates)",
+      )
+        .choices(["test", "profile"] satisfies CompareAxis[])
+        .default("test"),
     )
     .action(
       async (

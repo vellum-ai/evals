@@ -1,9 +1,7 @@
 import type { AgentEvent } from "../../../../../src/lib/adapter";
 import {
-  CODE_SEARCH_TOOLS,
-  fileReadCalls,
-  readToolCalls,
-  spoolDerefReads,
+  isSpoolDerefRead,
+  observedReadScope,
 } from "../../../../../src/lib/common-metrics/tool-activity";
 import {
   readAssistantEvents,
@@ -26,8 +24,9 @@ const METRIC_NAME = "spool-recovery";
  * a given spooled result is not observable from the stream, so the
  * deliberate rule is that all spooled reads count as needed — an agent
  * that fat-reads and walks away from the stub eats the miss. A spooled
- * read counts as recovered when a LATER non-empty read took either
- * legitimate route back to the content:
+ * read counts as recovered when a LATER non-empty, NON-ERRORED read took
+ * either legitimate route back to the content (an errored result's text
+ * is an error message, not the content):
  *
  *   - Deref: a read of the stub's own `.tool-results/` target (such
  *     reads stay inline by design, so a non-empty result means the
@@ -44,13 +43,10 @@ const METRIC_NAME = "spool-recovery";
  * from lucky.
  */
 export function gradeSpoolRecovery(events: AgentEvent[]): MetricResult {
-  const reads = fileReadCalls(events);
-  const derefs = spoolDerefReads(reads);
+  const { reads, codeSearchCalls } = observedReadScope(events);
+  const derefs = reads.filter(isSpoolDerefRead);
   const successfulDerefCount = derefs.filter(
-    (read) => read.resultChars > 0,
-  ).length;
-  const codeSearchCalls = readToolCalls(events).filter((call) =>
-    CODE_SEARCH_TOOLS.has(call.name),
+    (read) => read.resultChars > 0 && !read.isError,
   ).length;
 
   const spooled = reads
@@ -85,6 +81,8 @@ export function gradeSpoolRecovery(events: AgentEvent[]): MetricResult {
     reads.slice(index + 1).some(
       (later) =>
         later.resultChars > 0 &&
+        // A failed read brought back an error message, not the content.
+        !later.isError &&
         // Deref of this stub's own spool file...
         (later.path === read.spoolPath ||
           // ...or an explicit-window re-read of the spooled file that

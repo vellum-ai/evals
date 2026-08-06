@@ -5,10 +5,12 @@ import {
   defaultWindowTruncations,
   editStyle,
   fileReadCalls,
+  isSpoolDerefRead,
+  noObservableReadsReason,
+  observedReadScope,
   readsPerFile,
   readToolCalls,
   resumeOffsetHonored,
-  spoolDerefReads,
 } from "../common-metrics/tool-activity";
 
 /** A direct tool call, the wire shape. */
@@ -36,6 +38,11 @@ function dispatched(tool: string, input: Record<string, unknown>): AgentEvent {
 /** A tool result. The Vellum daemon's carries no toolUseId. */
 function result(text: string, toolUseId?: string): AgentEvent {
   return { message: { type: "tool_result", result: text, toolUseId } };
+}
+
+/** A FAILED tool result — `isError: true`, text is the error message. */
+function errorResult(text: string): AgentEvent {
+  return { message: { type: "tool_result", result: text, isError: true } };
 }
 
 /** The assistant's truncation notice, verbatim shape. */
@@ -107,6 +114,44 @@ describe("readToolCalls", () => {
   });
 });
 
+describe("readToolCalls error flag", () => {
+  test("captures isError from the paired result", () => {
+    const calls = readToolCalls([
+      direct("file_read", { path: "/workspace/a.md" }),
+      errorResult("Error: file not found"),
+      direct("file_read", { path: "/workspace/b.md" }),
+      result("body"),
+    ]);
+    expect(calls[0].isError).toBe(true);
+    // A result without the flag leaves it unset — only an explicit
+    // `isError: true` marks failure.
+    expect(calls[1].isError).toBeUndefined();
+  });
+});
+
+describe("path canonicalization", () => {
+  test("all spellings of a workspace file share one identity", () => {
+    // Real runs mix these spellings for the SAME file.
+    const reads = fileReadCalls([
+      direct("file_read", { path: "/workspace/catalog/price-table.ts" }),
+      direct("file_read", { path: "catalog/price-table.ts" }),
+      direct("file_read", { path: "./catalog/price-table.ts" }),
+      direct("file_read", { path: "/workspace//catalog/price-table.ts" }),
+    ]);
+    expect(reads.map((read) => read.path)).toEqual(
+      Array.from({ length: 4 }, () => "catalog/price-table.ts"),
+    );
+    expect(readsPerFile(reads).get("catalog/price-table.ts")).toBe(4);
+  });
+
+  test("paths outside the workspace keep their absolute spelling", () => {
+    const reads = fileReadCalls([
+      direct("host_file_read", { path: "/var/log/app.log" }),
+    ]);
+    expect(reads[0].path).toBe("/var/log/app.log");
+  });
+});
+
 describe("fileReadCalls", () => {
   test("reads path, offset, limit and result size", () => {
     const reads = fileReadCalls([
@@ -145,8 +190,9 @@ describe("fileReadCalls", () => {
       result(SPOOL_STUB_RESULT),
     ]);
     expect(reads[0].spooled).toBe(true);
+    // Canonical (workspace-relative) so a deref by any spelling matches.
     expect(reads[0].spoolPath).toBe(
-      "/workspace/.conversations/c1/.tool-results/ab12cd34ef56.txt",
+      ".conversations/c1/.tool-results/ab12cd34ef56.txt",
     );
   });
 
@@ -158,7 +204,7 @@ describe("fileReadCalls", () => {
   });
 });
 
-describe("spoolDerefReads", () => {
+describe("isSpoolDerefRead", () => {
   test("finds the deref read after a spooled result", () => {
     const reads = fileReadCalls([
       direct("file_read", { path: "/workspace/huge.json" }),
@@ -168,19 +214,27 @@ describe("spoolDerefReads", () => {
       }),
       result("the full spooled content"),
     ]);
-    const derefs = spoolDerefReads(reads);
+    const derefs = reads.filter(isSpoolDerefRead);
     expect(derefs).toHaveLength(1);
     expect(derefs[0].path).toBe(
-      "/workspace/.conversations/c1/.tool-results/ab12cd34ef56.txt",
+      ".conversations/c1/.tool-results/ab12cd34ef56.txt",
     );
   });
 
+  test("a spool dir at the workspace root is still a deref", () => {
+    // Canonical paths are workspace-relative, so a root-level spool dir
+    // becomes a LEADING `.tool-results/` segment with no slash before it.
+    const reads = fileReadCalls([
+      direct("file_read", { path: "/workspace/.tool-results/ab12.txt" }),
+    ]);
+    expect(isSpoolDerefRead(reads[0])).toBe(true);
+  });
+
   test("an ordinary read is not a deref", () => {
-    expect(
-      spoolDerefReads(
-        fileReadCalls([direct("file_read", { path: "/workspace/notes.md" })]),
-      ),
-    ).toHaveLength(0);
+    const reads = fileReadCalls([
+      direct("file_read", { path: "/workspace/notes.md" }),
+    ]);
+    expect(reads.filter(isSpoolDerefRead)).toHaveLength(0);
   });
 });
 
@@ -193,8 +247,8 @@ describe("readsPerFile", () => {
         direct("file_read", { path: "/workspace/b.md" }),
       ]),
     );
-    expect(counts.get("/workspace/a.md")).toBe(2);
-    expect(counts.get("/workspace/b.md")).toBe(1);
+    expect(counts.get("a.md")).toBe(2);
+    expect(counts.get("b.md")).toBe(1);
   });
 });
 
@@ -204,8 +258,8 @@ describe("editStyle", () => {
       direct("file_edit", { path: "/workspace/report.md" }),
       dispatched("file_write", { path: "/workspace/config.json" }),
     ]);
-    expect(style.surgicalEdits).toEqual(["/workspace/report.md"]);
-    expect(style.fullWrites).toEqual(["/workspace/config.json"]);
+    expect(style.surgicalEdits).toEqual(["report.md"]);
+    expect(style.fullWrites).toEqual(["config.json"]);
   });
 
   test("a write creating a new file is not a rewrite", () => {
@@ -216,7 +270,7 @@ describe("editStyle", () => {
       ],
       { preexistingPaths: ["/workspace/existing.md"] },
     );
-    expect(style.fullWrites).toEqual(["/workspace/existing.md"]);
+    expect(style.fullWrites).toEqual(["existing.md"]);
   });
 
   test("a second write to a file the run created IS a rewrite", () => {
@@ -227,7 +281,21 @@ describe("editStyle", () => {
       ],
       { preexistingPaths: [] },
     );
-    expect(style.fullWrites).toEqual(["/workspace/fresh.md"]);
+    expect(style.fullWrites).toEqual(["fresh.md"]);
+  });
+
+  test("a write via another spelling of a staged path IS a rewrite", () => {
+    // The bug this canonicalization fixes: `./src/ledger.ts` was not in
+    // the exact-string preexisting set, so a wholesale rewrite was
+    // misread as a new-file creation.
+    const style = editStyle(
+      [
+        direct("file_write", { path: "./src/ledger.ts" }),
+        direct("file_write", { path: "/workspace/report.ts" }),
+      ],
+      { preexistingPaths: ["src/ledger.ts", "report.ts"] },
+    );
+    expect(style.fullWrites).toEqual(["src/ledger.ts", "report.ts"]);
   });
 });
 
@@ -367,5 +435,63 @@ describe("resumeOffsetHonored", () => {
       result("everything"),
     ]);
     expect(resumeOffsetHonored(reads)).toBe(true);
+  });
+
+  test("a resume via another spelling of the path still counts", () => {
+    // GIVEN a truncated relative-path read resumed via the absolute
+    // spelling — the same file, previously scored 0 "abandoned"
+    const reads = fileReadCalls([
+      direct("file_read", { path: "catalog/price-table.ts" }),
+      result(truncationNotice(2000, 6000)),
+      direct("file_read", {
+        path: "/workspace/catalog/price-table.ts",
+        offset: 2001,
+      }),
+      result("rows 2001 through the end"),
+    ]);
+    expect(resumeOffsetHonored(reads)).toBe(true);
+  });
+
+  test("an errored follow-up is not a resume", () => {
+    // GIVEN a follow-up whose non-empty result is an ERROR message —
+    // notice-free non-empty text must not read as "ran to EOF"
+    const reads = fileReadCalls([
+      direct("file_read", { path: "/workspace/big.csv" }),
+      result(truncationNotice(2000, 6000)),
+      direct("file_read", { path: "/workspace/big.csv", offset: 2001 }),
+      errorResult("Error: file not found"),
+    ]);
+    expect(resumeOffsetHonored(reads)).toBe(false);
+  });
+});
+
+describe("observedReadScope", () => {
+  test("collects reads, search calls, spawns and the scope sentence", () => {
+    const observed = observedReadScope([
+      direct("file_read", { path: "/workspace/a.md" }),
+      result("body"),
+      direct("host_code_search", { query: "needle" }),
+      result("a.md:1: needle"),
+      dispatched("subagent_spawn", { label: "s", objective: "survey" }),
+    ]);
+    expect(observed.reads).toHaveLength(1);
+    expect(observed.codeSearchCalls).toBe(1);
+    expect(observed.subagentSpawnCount).toBe(1);
+    expect(observed.scope).toContain("parent-events-only");
+  });
+
+  test("the not-applicable reason branches on delegation", () => {
+    expect(
+      noObservableReadsReason(
+        { codeSearchCalls: 0, subagentSpawnCount: 2 },
+        { delegated: "it is not scored", noReads: "nothing to grade" },
+      ),
+    ).toContain("2 subagent(s) were spawned");
+    expect(
+      noObservableReadsReason(
+        { codeSearchCalls: 3, subagentSpawnCount: 0 },
+        { delegated: "it is not scored", noReads: "nothing to grade" },
+      ),
+    ).toContain("(3 code_search call(s)) — nothing to grade.");
   });
 });

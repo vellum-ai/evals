@@ -1,3 +1,4 @@
+import { mentionsStandaloneNumber } from "../../../../../src/lib/common-metrics/number-mention";
 import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
 import { readDeliverable } from "../../../../../src/lib/common-metrics/workspace-deliverable";
 import {
@@ -8,13 +9,6 @@ import {
 } from "../constants";
 
 const METRIC_NAME = "totals-correct";
-
-/** Matches a number allowing thousands separators: 2850, 2,850, 2 850. */
-function mentionsNumber(text: string, value: number): boolean {
-  const digits = String(value);
-  const spaced = digits.replace(/\B(?=(\d{3})+(?!\d))/g, "[,\\s]?");
-  return new RegExp(`(?<![\\d.])${spaced}(?![\\d])`).test(text);
-}
 
 /**
  * The pure half of the metric: grade a memo's numbers.
@@ -44,15 +38,17 @@ export function gradeTotals(memo: string): {
   carriesNaiveSum: boolean;
 } {
   const perReagent = Object.entries(REAGENT_TOTALS_UL).map(
-    ([reagent, total]) => [reagent, mentionsNumber(memo, total)] as const,
+    ([reagent, total]) =>
+      [reagent, mentionsStandaloneNumber(memo, total)] as const,
   );
   return {
     perReagent,
-    grandTotalStated: mentionsNumber(memo, GRAND_TOTAL_UL),
+    grandTotalStated: mentionsStandaloneNumber(memo, GRAND_TOTAL_UL),
+    // The full stray-decimal sum, or its truncated integer part — a memo
+    // that rounded the un-reconciled number still carries the tell.
     carriesNaiveSum:
-      memo.includes(String(NAIVE_SUM_IF_TRAPS_MISSED)) ||
-      memo.includes("11250") ||
-      memo.includes("11,250"),
+      mentionsStandaloneNumber(memo, NAIVE_SUM_IF_TRAPS_MISSED) ||
+      mentionsStandaloneNumber(memo, Math.trunc(NAIVE_SUM_IF_TRAPS_MISSED)),
   };
 }
 

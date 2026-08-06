@@ -7,16 +7,6 @@ import { STAGED_WORKSPACE_PATHS, TARGET_FILE } from "../constants";
 const METRIC_NAME = "patch-not-rewrite";
 
 /**
- * Staged paths in both spellings a file tool may use: workspace-relative
- * (as `setup.ts` declares them) and absolute under `/workspace/` (as the
- * assistant's file tools address them).
- */
-const PREEXISTING_PATHS = STAGED_WORKSPACE_PATHS.flatMap((path) => [
-  path,
-  `/workspace/${path}`,
-]);
-
-/**
  * The pure half of the metric: given the run's events, did the fix land
  * as a targeted `file_edit` patch or a wholesale `file_write` rewrite?
  *
@@ -33,7 +23,13 @@ const PREEXISTING_PATHS = STAGED_WORKSPACE_PATHS.flatMap((path) => [
  * fixed-but-rewritten must be visible as exactly that.
  */
 export function gradePatchNotRewrite(events: AgentEvent[]): MetricResult {
-  const style = editStyle(events, { preexistingPaths: PREEXISTING_PATHS });
+  // `editStyle` canonicalizes path identity (workspace-relative, no
+  // leading `./`), so the staged paths need only their declared spelling
+  // — a write via `/workspace/src/ledger.ts` or `./src/ledger.ts` still
+  // matches.
+  const style = editStyle(events, {
+    preexistingPaths: STAGED_WORKSPACE_PATHS,
+  });
   const targetEdited = style.surgicalEdits.some((path) =>
     path.endsWith(TARGET_FILE),
   );

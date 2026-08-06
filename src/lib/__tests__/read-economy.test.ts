@@ -64,9 +64,11 @@ describe("read-economy grading (shared across cases)", () => {
       defaultLimitReadCount: 2,
       spooledReadCount: 1,
       spoolDerefReadCount: 1,
+      // Keys are canonical (workspace-relative) paths — see
+      // `normalizePath` in tool-activity.ts.
       readsPerFile: {
-        "/workspace/logs/gateway.log": 2,
-        "/workspace/.conversations/c1/.tool-results/ab12cd34ef56.txt": 1,
+        "logs/gateway.log": 2,
+        ".conversations/c1/.tool-results/ab12cd34ef56.txt": 1,
       },
     });
   });

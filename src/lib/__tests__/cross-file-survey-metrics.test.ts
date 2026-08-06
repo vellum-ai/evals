@@ -119,6 +119,53 @@ describe("survey-correct set scoring", () => {
     expect(grade.reported).toEqual([]);
     expect(grade.falsePositives).toEqual([]);
   });
+
+  test("explaining the near-miss exclusion is not a false positive", () => {
+    // GIVEN the BEST answer: the exact set, plus the planted
+    // looks-big-resolves-under service named only to show the work
+    const answer = [
+      answerListing(OVER, EXPECTED_COUNT),
+      "",
+      "Note: profiles-api's shared constant resolves to 20s, so it stays under the threshold.",
+    ].join("\n");
+
+    // WHEN graded
+    const grade = gradeSurvey(answer);
+
+    // THEN the exclusion framing clears the mention entirely
+    expect(grade.falsePositives).toEqual([]);
+    expect(grade.score).toBe(1);
+    expect(grade.explanatoryMentions.map((m) => m.name)).toEqual([
+      "profiles-api",
+    ]);
+  });
+
+  test("an excluded-services block under a heading also clears", () => {
+    const answer = [
+      answerListing(OVER.slice(0, 3)),
+      "",
+      "**Excluded (under the threshold):**",
+      "- profiles-api (20s effective)",
+      "- payments-api (25s)",
+    ].join("\n");
+    const grade = gradeSurvey(answer);
+    expect(grade.falsePositives).toEqual([]);
+    expect(grade.explanatoryMentions.map((m) => m.name).sort()).toEqual([
+      "payments-api",
+      "profiles-api",
+    ]);
+  });
+
+  test("a bare list including an under-threshold name still costs", () => {
+    // GIVEN an under-threshold service listed among the findings with no
+    // exclusion framing anywhere — a genuine wrong membership
+    const grade = gradeSurvey(
+      answerListing([...OVER.slice(0, 3), "profiles-api"]),
+    );
+    expect(grade.falsePositives).toEqual(["profiles-api"]);
+    expect(grade.explanatoryMentions).toEqual([]);
+    expect(grade.score).toBeCloseTo(3 / (OVER.length + 1));
+  });
 });
 
 describe("slice-economy scoring curve", () => {
@@ -166,10 +213,26 @@ describe("gradeSliceEconomy over an event stream", () => {
     ];
     const graded = gradeSliceEconomy(events);
     expect(graded.score).toBeCloseTo((ZERO_MARKS_MEAN - 3) / 2.5);
+    // Keys are canonical (workspace-relative) paths.
     expect(graded.metadata?.perFileReadCounts).toEqual({
-      "/workspace/services/auth-api/config.ts": 5,
-      "/workspace/services/shared/timeouts.ts": 1,
+      "services/auth-api/config.ts": 5,
+      "services/shared/timeouts.ts": 1,
     });
+  });
+
+  test("spellings of the same file collapse into one slice count", () => {
+    // GIVEN the same config read relative, dot-relative and absolute —
+    // one file read three times, not three files read once
+    const events = [
+      direct("file_read", { path: "services/auth-api/config.ts" }),
+      direct("file_read", { path: "./services/auth-api/config.ts" }),
+      direct("file_read", { path: "/workspace/services/auth-api/config.ts" }),
+    ];
+    const graded = gradeSliceEconomy(events);
+    expect(graded.metadata?.perFileReadCounts).toEqual({
+      "services/auth-api/config.ts": 3,
+    });
+    expect(graded.metadata?.meanReadsPerFile).toBe(3);
   });
 
   test("no reads and no subagents is not applicable, with search count", () => {
@@ -217,7 +280,7 @@ describe("gradeSliceEconomy over an event stream", () => {
     expect(graded.metadata?.spooledReadCount).toBe(1);
     expect(graded.metadata?.spoolDerefReadCount).toBe(1);
     expect(graded.metadata?.perFileReadCounts).toEqual({
-      "/workspace/services/media-api/config.ts": 1,
+      "services/media-api/config.ts": 1,
     });
   });
 });

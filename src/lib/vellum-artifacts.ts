@@ -10,9 +10,15 @@
  * the agent produced.
  *
  * Everything here is Vellum-specific by design (the "Vellum artifacts"
- * grading decision for the procedure-reuse tests). Metrics using these
- * helpers must catch `AssistantContainerUnavailableError` and degrade to
- * an explanatory zero score for species that expose no such container.
+ * grading decision for the procedure-reuse tests). On species with no
+ * inspectable `<runId>-assistant` container (e.g. hermes, whose adapter
+ * runs a `<runId>-hermes` container these helpers never target), every
+ * probe throws `AssistantContainerUnavailableError`. Metrics using these
+ * helpers must catch it and degrade — per convention to
+ * `applicable: false` with an explanatory reason, so the unmeasurable
+ * dimension is excluded from `scoreTotal` instead of averaged in as a
+ * fake 0, and cross-species comparisons rest on the species-agnostic
+ * axes (transcript correctness, egress-jail cost/tokens, runtime).
  */
 
 import { execFile } from "node:child_process";

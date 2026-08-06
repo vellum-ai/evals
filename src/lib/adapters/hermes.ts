@@ -163,8 +163,58 @@ export const EXEC_PATH =
  * `--workdir` here and staging files into the same directory lets a test
  * reference an uploaded file by bare name. Mirrors the Vellum adapter's
  * `/workspace` contract so one SPEC discovery hint works across species.
+ *
+ * The mirror covers staging only, not post-run introspection: the
+ * container-introspection helpers in `src/lib/vellum-artifacts.ts` target
+ * the `<runId>-assistant` container, which never exists on a hermes run
+ * (this container is `<runId>-hermes`), so they throw
+ * `AssistantContainerUnavailableError`. Case metrics that catch it per
+ * convention degrade to `applicable: false` on hermes — excluded from the
+ * score rather than recorded as a fake 0 — leaving hermes graded on the
+ * species-agnostic axes (transcript correctness, egress-jail cost/tokens,
+ * runtime).
  */
 export const HERMES_WORKSPACE_DIR = "/workspace";
+
+/**
+ * Pure staging policy for a `stage-workspace-file` payload: where the file
+ * lands in the container and the argv that writes it. Split out from the
+ * Docker-touching `stageWorkspaceFile` so the policy is unit-testable
+ * without Docker (see `__tests__/hermes-staging.test.ts`).
+ *
+ * - `containerPath` is `HERMES_WORKSPACE_DIR/<path>` — a workspace-relative
+ *   SPEC path like `manifests/box-a.csv` lands at
+ *   `/workspace/manifests/box-a.csv`, the same place the Vellum adapter
+ *   puts it, so one SPEC discovery hint works across species.
+ * - `writeArgv` is argv-only (no shell interpolation of the path): utf8
+ *   payloads ride stdin into `cp /dev/stdin <path>`; base64 payloads stay
+ *   base64 text on stdin (the runner's stdin contract is UTF-8) and decode
+ *   to raw bytes inside the container, with the path as a positional
+ *   parameter (`"$1"`).
+ *
+ * Rejects unsafe paths (absolute, `..` traversal, empty) via the shared
+ * `assertSafeWorkspacePath`, so containment is identical across species.
+ */
+export function planHermesWorkspaceStaging(input: {
+  path: string;
+  encoding?: "utf8" | "base64";
+}): {
+  containerPath: string;
+  containerParent: string;
+  writeArgv: string[];
+} {
+  assertSafeWorkspacePath(input.path);
+  const containerPath = `${HERMES_WORKSPACE_DIR}/${input.path}`;
+  const containerParent = containerPath.slice(
+    0,
+    containerPath.lastIndexOf("/"),
+  );
+  const writeArgv =
+    input.encoding === "base64"
+      ? ["sh", "-c", 'base64 -d > "$1"', "sh", containerPath]
+      : ["cp", "/dev/stdin", containerPath];
+  return { containerPath, containerParent, writeArgv };
+}
 
 /**
  * LLM provider env vars forwarded from the eval process env into the Hermes
@@ -943,8 +993,14 @@ export class HermesAgent implements BaseAgent {
   /**
    * Stage a file into the workspace so a turn can read it by name. Parents
    * are created first (mirroring the Vellum adapter), then the payload is
-   * piped in over stdin via `cp /dev/stdin <path>` — argv-only, so a path
-   * needs no shell quoting and the content is never echoed to the run log.
+   * piped in over stdin — argv-only, so a path needs no shell quoting and
+   * the content is never echoed to the run log. The path mapping and
+   * encoding handling live in the pure `planHermesWorkspaceStaging`.
+   *
+   * Runs as a `runSetupCommand` before the conversation's first turn (the
+   * runner executes setup commands right after hatch — see
+   * `runner/run-once.ts`), so staged files are already in `/workspace`
+   * when the first `hermes -z` shot starts.
    *
    * Writes as the gateway's unprivileged `hermes` user (the same user `send`
    * runs `hermes -z` as) so the agent's `file`/`terminal` tools can read and
@@ -956,12 +1012,7 @@ export class HermesAgent implements BaseAgent {
     content: string;
     encoding?: "utf8" | "base64";
   }): Promise<void> {
-    assertSafeWorkspacePath(input.path);
-    const containerPath = `${HERMES_WORKSPACE_DIR}/${input.path}`;
-    const containerParent = containerPath.slice(
-      0,
-      containerPath.lastIndexOf("/"),
-    );
+    const { containerParent, writeArgv } = planHermesWorkspaceStaging(input);
     const mkdir = await this.runner.run("docker", [
       "exec",
       "--user",
@@ -975,13 +1026,6 @@ export class HermesAgent implements BaseAgent {
       mkdir,
       `mkdir -p ${containerParent} for ${this.id} workspace file ${input.path}`,
     );
-    // Base64 payloads stay base64 text on stdin (the runner's stdin contract
-    // is UTF-8) and decode to raw bytes inside the container. The path rides
-    // as a positional parameter ("$1"), preserving the no-shell-quoting rule.
-    const writeArgv =
-      input.encoding === "base64"
-        ? ["sh", "-c", 'base64 -d > "$1"', "sh", containerPath]
-        : ["cp", "/dev/stdin", containerPath];
     const write = await this.runner.run(
       "docker",
       [

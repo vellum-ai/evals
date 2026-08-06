@@ -1,3 +1,4 @@
+import { mentionsStandaloneNumber } from "../../../../../src/lib/common-metrics/number-mention";
 import { classifyScopeMentions } from "../../../../../src/lib/common-metrics/scope-mentions";
 import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
 import { readDeliverable } from "../../../../../src/lib/common-metrics/workspace-deliverable";
@@ -11,12 +12,14 @@ import {
 
 const METRIC_NAME = "audit-correct";
 
-/** Digits-only comparison so €357, 357.00 and 357 all match. */
+/**
+ * The euro total as a standalone number: €357, 357.00, and the
+ * decimal-comma spelling 357,00 all match; 357.5 and 3570 do not (the
+ * hand-rolled `\b` matcher held its boundary before "." and let a
+ * different decimal count).
+ */
 function mentionsAmount(text: string, amount: number): boolean {
-  const pattern = new RegExp(
-    `\\b${amount}(?:[.,]0{1,2})?\\b`.replace(/,/g, "[.,]"),
-  );
-  return pattern.test(text);
+  return mentionsStandaloneNumber(text, amount, { decimalComma: true });
 }
 
 /**

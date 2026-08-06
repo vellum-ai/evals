@@ -34,6 +34,32 @@ describe("simulatorVisibleSpec", () => {
     const spec = "## Your role\nx\n## End condition\ny\n";
     expect(simulatorVisibleSpec(spec)).toBe(spec);
   });
+
+  test("cross-file-survey's visible portion carries no ground truth", async () => {
+    // Regression: the answer key (count, trap service names, resolved
+    // constants) once sat ABOVE the redaction cut, one clarifying
+    // question away from the tested agent.
+    const spec = await Bun.file(
+      "benchmarks/personal-intelligence/tests/cross-file-survey/SPEC.md",
+    ).text();
+    const visible = simulatorVisibleSpec(spec);
+    expect(visible).not.toContain("## Fixtures");
+    for (const leak of [
+      "billing-api",
+      "search-worker",
+      "exports-api",
+      "analytics-worker",
+      "profiles-api",
+      "120",
+      "20s",
+      "has 14",
+      "exactly 10",
+    ]) {
+      expect(visible, `visible spec must not contain "${leak}"`).not.toContain(
+        leak,
+      );
+    }
+  });
 });
 
 describe("scriptedOpener", () => {

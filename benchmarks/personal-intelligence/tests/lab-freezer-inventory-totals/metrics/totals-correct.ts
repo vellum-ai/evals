@@ -1,3 +1,4 @@
+import { mentionsStandaloneNumber } from "../../../../../src/lib/common-metrics/number-mention";
 import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
 import { readDeliverable } from "../../../../../src/lib/common-metrics/workspace-deliverable";
 import {
@@ -9,12 +10,20 @@ import {
 
 const METRIC_NAME = "totals-correct";
 
-/** Matches a number allowing thousands separators: 2850, 2,850, 2 850. */
-function mentionsNumber(text: string, value: number): boolean {
-  const digits = String(value);
-  const spaced = digits.replace(/\B(?=(\d{3})+(?!\d))/g, "[,\\s]?");
-  return new RegExp(`(?<![\\d.])${spaced}(?![\\d])`).test(text);
-}
+/**
+ * Spellings of the un-reconciled sum a memo might carry: exact
+ * (11250.775), rounded to 2 dp — both true decimal rounding (11250.78)
+ * and the float-artifact `toFixed` spelling (11250.77) — and the integer
+ * roundings (11251 rounded, 11250 truncated). A memo that rounded the
+ * stray-decimal number still carries the tell.
+ */
+const NAIVE_SUM_SPELLINGS = [
+  NAIVE_SUM_IF_TRAPS_MISSED,
+  Math.round(NAIVE_SUM_IF_TRAPS_MISSED * 100) / 100,
+  Number(NAIVE_SUM_IF_TRAPS_MISSED.toFixed(2)),
+  Math.round(NAIVE_SUM_IF_TRAPS_MISSED),
+  Math.trunc(NAIVE_SUM_IF_TRAPS_MISSED),
+];
 
 /**
  * The pure half of the metric: grade a memo's numbers.
@@ -44,15 +53,17 @@ export function gradeTotals(memo: string): {
   carriesNaiveSum: boolean;
 } {
   const perReagent = Object.entries(REAGENT_TOTALS_UL).map(
-    ([reagent, total]) => [reagent, mentionsNumber(memo, total)] as const,
+    ([reagent, total]) =>
+      [reagent, mentionsStandaloneNumber(memo, total)] as const,
   );
   return {
     perReagent,
-    grandTotalStated: mentionsNumber(memo, GRAND_TOTAL_UL),
-    carriesNaiveSum:
-      memo.includes(String(NAIVE_SUM_IF_TRAPS_MISSED)) ||
-      memo.includes("11250") ||
-      memo.includes("11,250"),
+    grandTotalStated: mentionsStandaloneNumber(memo, GRAND_TOTAL_UL),
+    // The stray-decimal sum in any spelling — exact, 2-dp rounded, or
+    // integer-rounded ({@link NAIVE_SUM_SPELLINGS}).
+    carriesNaiveSum: NAIVE_SUM_SPELLINGS.some((spelling) =>
+      mentionsStandaloneNumber(memo, spelling),
+    ),
   };
 }
 

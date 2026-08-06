@@ -10,6 +10,7 @@ import {
 } from "../lib/catalog";
 import { loadProfile } from "../lib/profile";
 import { loadTestDef } from "../lib/test-def";
+import { renderTable } from "../lib/text-table";
 
 interface ListOptions {
   json?: boolean;
@@ -21,18 +22,7 @@ function printRows(headers: string[], rows: string[][]): void {
     return;
   }
 
-  const widths = headers.map((header, index) =>
-    Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)),
-  );
-  const format = (row: string[]) =>
-    row
-      .map((cell, index) => cell.padEnd(widths[index]))
-      .join("  ")
-      .trimEnd();
-
-  console.log(format(headers));
-  console.log(format(widths.map((width) => "-".repeat(width))));
-  rows.forEach((row) => console.log(format(row)));
+  console.log(renderTable(headers, rows));
 }
 
 export function registerListCommands(program: Command): void {

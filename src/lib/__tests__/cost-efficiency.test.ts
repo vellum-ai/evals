@@ -1,11 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { makeCostMetric } from "../common-metrics/cost-efficiency";
-import {
-  ensureRunArtifacts,
-  writeUsage,
-  type UsageSummary,
-} from "../metrics";
+import { ensureRunArtifacts, writeUsage, type UsageSummary } from "../metrics";
 
 async function freshRunWithUsage(
   name: string,

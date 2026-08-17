@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { AgentEvent } from "../src/lib/adapter";
 import {
+  analyzeEvents,
   classifyTerminalCommand,
   distinctFilePathsTouched,
 } from "./analyze-tool-usage";
@@ -154,5 +155,74 @@ describe("distinctFilePathsTouched", () => {
 
   test("an empty stream touches nothing", () => {
     expect(distinctFilePathsTouched([])).toEqual([]);
+  });
+});
+
+describe("analyzeEvents: which calls count as terminal", () => {
+  test("the shipped shell tools classify under their exact names", () => {
+    const analysis = analyzeEvents([
+      direct("bash", { command: "cat src/a.ts" }),
+      direct("host_bash", { command: "echo hi > notes.md" }),
+    ]);
+    expect(analysis.terminalCommands).toBe(2);
+    expect(analysis.terminalReads).toBe(1);
+    expect(analysis.terminalEdits).toBe(1);
+    expect(analysis.exactTerminalCalls).toBe(2);
+    expect(analysis.tolerantTerminalTools).toEqual([]);
+  });
+
+  test("a capitalized Bash classifies and reports as a shape match", () => {
+    // The exact set is one species' spelling. Another species' `Bash`
+    // read the file just the same, and dropping it reports a confident
+    // zero.
+    const analysis = analyzeEvents([direct("Bash", { command: "cat a.ts" })]);
+    expect(analysis.terminalCommands).toBe(1);
+    expect(analysis.terminalReads).toBe(1);
+    expect(analysis.exactTerminalCalls).toBe(0);
+    expect(analysis.tolerantTerminalCalls).toBe(1);
+    expect(analysis.tolerantTerminalTools).toEqual(["Bash"]);
+  });
+
+  test("other shell spellings match tolerantly, envelope included", () => {
+    const analysis = analyzeEvents([
+      direct("run_terminal_cmd", { command: "sed -i '' 's/a/b/' f.ts" }),
+      dispatched("execute_shell", { cmd: "cat b.ts" }),
+    ]);
+    // `cmd` is the fallback field, so the second call classifies too.
+    expect(analysis.terminalCommands).toBe(2);
+    expect(analysis.terminalEdits).toBe(1);
+    expect(analysis.terminalReads).toBe(1);
+    expect(analysis.tolerantTerminalTools).toEqual([
+      "execute_shell",
+      "run_terminal_cmd",
+    ]);
+  });
+
+  test("a terminal-shaped call with no command string is unclassifiable", () => {
+    // Counting it as zero reads and zero edits is the silent failure
+    // this reports instead.
+    const analysis = analyzeEvents([
+      direct("bash", { script: "cat a.ts" }),
+      direct("run_terminal_cmd", {}),
+    ]);
+    expect(analysis.terminalCommands).toBe(0);
+    expect(analysis.unclassifiableTerminalCalls).toBe(2);
+    expect(analysis.unclassifiableTerminalTools).toEqual([
+      "bash",
+      "run_terminal_cmd",
+    ]);
+  });
+
+  test("the file and subagent tools are not terminal-shaped", () => {
+    // The tolerant pattern is wide, so the tools it must never claim are
+    // asserted directly: neither name carries bash, shell, exec,
+    // terminal, command, or run.
+    const analysis = analyzeEvents([
+      direct("file_read", { path: "notes.md", command: "cat a.ts" }),
+      direct("subagent_read", { command: "cat a.ts" }),
+    ]);
+    expect(analysis.terminalCommands).toBe(0);
+    expect(analysis.unclassifiableTerminalCalls).toBe(0);
+    expect(analysis.tolerantTerminalTools).toEqual([]);
   });
 });

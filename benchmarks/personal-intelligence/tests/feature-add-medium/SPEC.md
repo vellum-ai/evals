@@ -94,4 +94,9 @@ script rather than editing fixtures or `constants.ts` by hand.
   fraction of four checks): `report month 2025-03` still totals $157.42,
   `report total` still totals $717.09, `list` still runs and prints
   something, and the project's own `bun test src` passes.
+- Those totals are read from the spending the user actually keeps, so
+  they double as a "the run left that data alone" gate: a probe or test
+  expense written into the stored data and never removed shifts them and
+  fails. The category probes are filed against a copy for that reason,
+  and `feature-works` puts the stored data back if they land in it.
 - Assistant spend lands near the case's cost baseline (`assistant-cost`).

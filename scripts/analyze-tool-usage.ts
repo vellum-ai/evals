@@ -156,7 +156,19 @@ export function classifyTerminalCommand(
 // Event-stream interpretation
 // ---------------------------------------------------------------------------
 
+/** The shell tools whose exact names the Vellum species ships. */
 const TERMINAL_TOOLS = new Set(["bash", "host_bash"]);
+
+/**
+ * The tolerant shell-tool shape, mirroring
+ * `src/lib/common-metrics/script-reuse.ts`. Other species spell their
+ * terminal tool `Bash`, `run_terminal_cmd`, `execute_command`, and an
+ * unmatched name reports a confident "zero terminal reads or edits" for
+ * a run that did all of both. Names reaching this test are already
+ * unwrapped from the `skill_execute` envelope, so the envelope's own
+ * "execute" never matches here.
+ */
+const TERMINAL_TOOL_SHAPE = /bash|shell|exec|terminal|command|run/i;
 const FILE_TOOLS = new Set([
   "file_read",
   "host_file_read",
@@ -205,25 +217,57 @@ export function distinctFilePathsTouched(events: AgentEvent[]): string[] {
 }
 
 /** What the full event stream says beyond the neutral summary. */
-interface EventAnalysis {
+export interface EventAnalysis {
+  /** Terminal-shaped calls carrying a command line, so classifiable. */
   terminalCommands: number;
   terminalReads: number;
   terminalEdits: number;
+  /** Classified calls whose tool name is in {@link TERMINAL_TOOLS}. */
+  exactTerminalCalls: number;
+  /** Classified calls matched only by {@link TERMINAL_TOOL_SHAPE}. */
+  tolerantTerminalCalls: number;
+  /** The tool names that shape matched, sorted, so a reader sees it fire. */
+  tolerantTerminalTools: string[];
+  /**
+   * Terminal-shaped calls with no command string to read. Counted and
+   * printed rather than dropped: a tool spelling its command line under
+   * a third field name reads as zero reads and zero edits otherwise.
+   */
+  unclassifiableTerminalCalls: number;
+  /** The tool names those unclassifiable calls came from, sorted. */
+  unclassifiableTerminalTools: string[];
   distinctFilePaths: number;
   subagentSpawns: number;
   /** Spawned workers while touching at most one file in this stream. */
   subagentOveruse: boolean;
 }
 
-function analyzeEvents(events: AgentEvent[]): EventAnalysis {
+export function analyzeEvents(events: AgentEvent[]): EventAnalysis {
   let terminalCommands = 0;
   let terminalReads = 0;
   let terminalEdits = 0;
+  let exactTerminalCalls = 0;
+  let tolerantTerminalCalls = 0;
+  let unclassifiableTerminalCalls = 0;
+  const tolerantTerminalTools = new Set<string>();
+  const unclassifiableTerminalTools = new Set<string>();
 
   for (const call of readToolCalls(events)) {
-    if (!TERMINAL_TOOLS.has(call.name)) continue;
-    const command = readString(call.input.command);
-    if (command === undefined) continue;
+    const exact = TERMINAL_TOOLS.has(call.name);
+    if (!exact && !TERMINAL_TOOL_SHAPE.test(call.name)) continue;
+    const command =
+      readString(call.input.command) ?? readString(call.input.cmd);
+    if (command === undefined) {
+      unclassifiableTerminalCalls += 1;
+      unclassifiableTerminalTools.add(call.name);
+      continue;
+    }
+    if (exact) {
+      exactTerminalCalls += 1;
+    } else {
+      tolerantTerminalCalls += 1;
+      tolerantTerminalTools.add(call.name);
+    }
     terminalCommands += 1;
     const classified = classifyTerminalCommand(command);
     if (classified.readsFiles) terminalReads += 1;
@@ -236,6 +280,11 @@ function analyzeEvents(events: AgentEvent[]): EventAnalysis {
     terminalCommands,
     terminalReads,
     terminalEdits,
+    exactTerminalCalls,
+    tolerantTerminalCalls,
+    tolerantTerminalTools: Array.from(tolerantTerminalTools).sort(),
+    unclassifiableTerminalCalls,
+    unclassifiableTerminalTools: Array.from(unclassifiableTerminalTools).sort(),
     distinctFilePaths,
     subagentSpawns,
     subagentOveruse: subagentSpawns > 0 && distinctFilePaths <= 1,
@@ -338,6 +387,20 @@ function printAnalysis(analysis: EventAnalysis): void {
     `  terminal: ${analysis.terminalCommands} command(s), ` +
       `${analysis.terminalReads} read file(s), ${analysis.terminalEdits} edit file(s)`,
   );
+  if (analysis.tolerantTerminalTools.length > 0) {
+    console.log(
+      `  terminal tool names: ${analysis.exactTerminalCalls} exact, ` +
+        `${analysis.tolerantTerminalCalls} matched by shape only ` +
+        `(${analysis.tolerantTerminalTools.join(", ")})`,
+    );
+  }
+  if (analysis.unclassifiableTerminalCalls > 0) {
+    console.log(
+      `  unclassifiable terminal calls (no command string): ` +
+        `${analysis.unclassifiableTerminalCalls} ` +
+        `(${analysis.unclassifiableTerminalTools.join(", ")})`,
+    );
+  }
   console.log(
     `  files touched via file tools: ${analysis.distinctFilePaths} distinct path(s)`,
   );
@@ -409,9 +472,11 @@ async function main(argv: string[]): Promise<number> {
     terminalCommands: 0,
     terminalReads: 0,
     terminalEdits: 0,
+    unclassifiableTerminalCalls: 0,
     distinctFilePaths: 0,
     subagentSpawns: 0,
   };
+  const tolerantTerminalTools = new Set<string>();
   let overuseRuns = 0;
   let totalCalls = 0;
 
@@ -436,6 +501,10 @@ async function main(argv: string[]): Promise<number> {
     totals.terminalCommands += analysis.terminalCommands;
     totals.terminalReads += analysis.terminalReads;
     totals.terminalEdits += analysis.terminalEdits;
+    totals.unclassifiableTerminalCalls += analysis.unclassifiableTerminalCalls;
+    for (const tool of analysis.tolerantTerminalTools) {
+      tolerantTerminalTools.add(tool);
+    }
     totals.distinctFilePaths += analysis.distinctFilePaths;
     totals.subagentSpawns += analysis.subagentSpawns;
     if (analysis.subagentOveruse) overuseRuns += 1;
@@ -450,7 +519,12 @@ async function main(argv: string[]): Promise<number> {
   console.log(`  tool calls recorded in the export: ${totalCalls}`);
   console.log(
     `  terminal commands: ${totals.terminalCommands} ` +
-      `(${totals.terminalReads} reading files, ${totals.terminalEdits} editing files)`,
+      `(${totals.terminalReads} reading files, ${totals.terminalEdits} editing files, ` +
+      `${totals.unclassifiableTerminalCalls} unclassifiable)`,
+  );
+  console.log(
+    `  terminal tool names matched by shape only: ` +
+      `${tolerantTerminalTools.size === 0 ? "none" : Array.from(tolerantTerminalTools).sort().join(", ")}`,
   );
   console.log(
     `  files touched via file tools: ${totals.distinctFilePaths} distinct path(s) summed over runs`,

@@ -81,4 +81,8 @@ script rather than editing fixtures or `constants.ts` by hand.
   `report month 2025-03`, and `report total` print exactly what the
   committed fixture prints, and the project's own `bun test src` passes
   (`nothing-broken`, scored as the fraction of those four checks).
+- Every check reads the spending the user actually keeps, not a scratch
+  copy, so the totals double as a "the run left that data alone" gate: a
+  probe or test expense written into the stored data and never removed
+  shifts the year and the grand total, and those checks fail.
 - Assistant spend lands near the case's cost baseline (`assistant-cost`).

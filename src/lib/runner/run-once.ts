@@ -1,3 +1,5 @@
+import { describeAssistantSource } from "../assistant-source";
+import { resolveAssistantSource } from "../adapters/vellum";
 import type {
   AgentEvent,
   AgentHatchInput,
@@ -416,6 +418,14 @@ export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
   // and no run directory.
   let agent: ReturnType<typeof createAgent> | undefined;
   let runDir: string | undefined;
+  // Provenance for the images this run builds: which tree, which commit,
+  // clean or not. Vellum is the species the harness builds from source;
+  // the rest run a published binary and have nothing to name. Read
+  // before the try so a failed run still records what it was running.
+  const assistantSource =
+    input.profile.manifest.species === "vellum"
+      ? describeAssistantSource(resolveAssistantSource())
+      : undefined;
 
   try {
     // Construction first — both can throw at this stage (e.g.
@@ -455,6 +465,7 @@ export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
       cliArgv,
       profileId: input.profile.id,
       profileManifest: input.profile.manifest,
+      assistantSource,
       testId: input.test.id,
       status: "running",
       startedAt,
@@ -764,6 +775,7 @@ export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
       cliArgv,
       profileId: input.profile.id,
       profileManifest: input.profile.manifest,
+      assistantSource,
       testId: input.test.id,
       status: "completed",
       startedAt,
@@ -806,6 +818,7 @@ export async function runEvalOnce(input: EvalRunInput): Promise<EvalRunResult> {
         cliArgv,
         profileId: input.profile.id,
         profileManifest: input.profile.manifest,
+        assistantSource,
         testId: input.test.id,
         status: "failed",
         startedAt,

@@ -17,13 +17,14 @@ All commands run from an `evals/` checkout with dependencies installed
 **The coding cases.** All are `status: experimental`, so an
 unfiltered `evals run` skips them — `--filter` is mandatory:
 
-| Case id                  | What it measures                                                            |
-| ------------------------ | --------------------------------------------------------------------------- |
-| `deep-file-fact-lookup`  | Truncation-notice paging in a 6,000-line file; read economy                 |
-| `surgical-bugfix-ledger` | `code_search`-guided fix; patch-style `file_edit` vs full-file rewrite      |
-| `cross-file-survey`      | Slice economy across ~40 config files; wall-clock under many-search load    |
-| `oversized-log-triage`   | Spooled-result recovery (`.tool-results/` deref) on a ~4 MB log             |
-| `feature-add-basic`      | Small pattern-following feature in an unfamiliar CLI project; tool strategy |
+| Case id                  | What it measures                                                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `deep-file-fact-lookup`  | Truncation-notice paging in a 6,000-line file; read economy                                                       |
+| `surgical-bugfix-ledger` | `code_search`-guided fix; patch-style `file_edit` vs full-file rewrite                                            |
+| `cross-file-survey`      | Slice economy across ~40 config files; wall-clock under many-search load                                          |
+| `oversized-log-triage`   | Spooled-result recovery (`.tool-results/` deref) on a ~4 MB log                                                   |
+| `feature-add-basic`      | Small pattern-following feature in an unfamiliar CLI project; tool strategy                                       |
+| `feature-add-medium`     | Cross-cutting feature over data, entry command, listing and every report; backward compatibility with stored data |
 
 **The assistant fixes under test** (parent repo, oldest → newest):
 

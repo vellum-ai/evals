@@ -111,6 +111,30 @@ the results back. That ratio — 2.7x the spend and 1.6x the latency for
 identical output — is what an unnecessary fan-out costs a user, and it is
 the number the delegation guidance is trading against.
 
+### Before and after the fix, on the one shape that spawns
+
+The capability probe run against both builds, `vellum-default`, same
+fixture and same ask:
+
+|                                 | Pre-fix (`65bf2a2101`)                     | Post-fix (`31688f21a8`) |
+| ------------------------------- | ------------------------------------------ | ----------------------- |
+| Subagents spawned               | 4 (`researcher`, batched two vendors each) | 0                       |
+| Assistant cost                  | $0.930                                     | $0.534                  |
+| Conversation wall-clock         | 148 s                                      | 230 s                   |
+| Input tokens through the parent | 466,346                                    | 2,166                   |
+
+This is the fix working: a 43% cut in spend on a request that used to
+fan out. Two things are worth stating plainly alongside it. The user in
+that probe asks for parallel workers **outright**, and the post-fix
+build declines — restraint on an unnecessary fan-out, or an explicit
+instruction not followed, depending on what the product wants. And the
+inline path took 55% longer, so the fan-out was buying real wall-clock
+with the money it spent.
+
+On the wide-review case, where neither build spawns, post-fix matches
+pre-fix (0 spawns, review 1.00, $0.411 against $0.349, 153 s against
+92 s — one sample each, inside run-to-run noise). Nothing regressed.
+
 ### What that means for measuring the fix
 
 These cases cannot show a before/after difference on the models tested,

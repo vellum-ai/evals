@@ -11,7 +11,11 @@ const packages = readdirSync(packagesDir).sort();
 
 let failed = 0;
 for (const name of packages) {
-  const result = Bun.spawnSync(["bun", "test", join("packages", name, "src")], {
+  const src = join("packages", name, "src");
+  const checks = readdirSync(join(import.meta.dir, src))
+    .filter((file) => file.endsWith(".checks.ts"))
+    .map((file) => `./${join(src, file)}`);
+  const result = Bun.spawnSync(["bun", "test", ...checks], {
     cwd: import.meta.dir,
     stdout: "pipe",
     stderr: "pipe",

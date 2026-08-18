@@ -12,8 +12,12 @@ step and no build step.
 bun run check.ts
 ```
 
-It runs each package's tests and prints one line per package, then a
-count. Any `FAIL` line means that package's tests did not pass.
+It runs each package's checks and prints one line per package, then a
+count. Any `FAIL` line means that package's checks did not pass.
+
+Each module has its checks beside it as `<module>.checks.ts`. The check
+script names them explicitly, so run the script rather than a bare
+`bun test`.
 
 ## The packages
 

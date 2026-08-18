@@ -1,0 +1,8 @@
+{
+  "name": "@shipyard/scheduling",
+  "version": "0.1.0",
+  "private": true,
+  "description": "When the van goes out and what is on it",
+  "type": "module",
+  "main": "src/index.ts"
+}

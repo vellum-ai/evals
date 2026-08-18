@@ -1,0 +1,8 @@
+{
+  "name": "@shipyard/reporting",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Daily totals for whoever is minding the shop",
+  "type": "module",
+  "main": "src/index.ts"
+}

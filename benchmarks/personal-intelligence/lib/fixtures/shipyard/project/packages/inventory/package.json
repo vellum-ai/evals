@@ -1,0 +1,8 @@
+{
+  "name": "@shipyard/inventory",
+  "version": "0.1.0",
+  "private": true,
+  "description": "What is on the shelf and what is spoken for",
+  "type": "module",
+  "main": "src/index.ts"
+}

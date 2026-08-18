@@ -1,0 +1,8 @@
+{
+  "name": "@shipyard/shipping",
+  "version": "0.1.0",
+  "private": true,
+  "description": "What it costs to send an order out",
+  "type": "module",
+  "main": "src/index.ts"
+}

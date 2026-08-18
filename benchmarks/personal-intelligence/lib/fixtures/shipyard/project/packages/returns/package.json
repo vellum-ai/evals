@@ -1,0 +1,8 @@
+{
+  "name": "@shipyard/returns",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Taking something back and paying it out",
+  "type": "module",
+  "main": "src/index.ts"
+}

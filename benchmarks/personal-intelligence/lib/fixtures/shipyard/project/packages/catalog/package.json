@@ -1,0 +1,8 @@
+{
+  "name": "@shipyard/catalog",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The products the shop sells and what they cost",
+  "type": "module",
+  "main": "src/index.ts"
+}

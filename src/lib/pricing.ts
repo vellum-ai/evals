@@ -143,6 +143,15 @@ const PRICING_TABLE: Record<string, ModelRow> = {
     outputPer1M: 0.28,
     cacheReadPer1M: 0.03,
   },
+  // Text-only GLM 5.2, the conversation model behind the
+  // `vellum-glm-text-only-*` profiles. `supportsVision: false` in the
+  // catalog is why those profiles exercise the image-fallback plugin at
+  // all, and an unpriced row would report their runs as free.
+  "fireworks:glm-5p2": {
+    inputPer1M: 1.4,
+    outputPer1M: 4.4,
+    cacheReadPer1M: 0.26,
+  },
 };
 
 /**

@@ -1,5 +1,5 @@
 import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
-import { readAnswerTextForGrading } from "../../../../../src/lib/common-metrics/assistant-answer";
+import { readAllAssistantMessagesText } from "../../../../../src/lib/common-metrics/assistant-answer";
 import { gradeVerbatimMention } from "../../../../../src/lib/common-metrics/verbatim-match";
 import { UI_VERSION_STRING } from "../constants";
 
@@ -24,9 +24,18 @@ export function gradeVersionString(answer: string): MetricResult {
   });
 }
 
-/** Scores whether the assistant copied the version string exactly. */
+/**
+ * A verbatim string is graded across every assistant message, not the
+ * final one alone. The question is whether the assistant ever put the
+ * string in front of the user; unlike a running figure, a quoted string
+ * has no draft form that a later message supersedes. A conversation that
+ * answers and is then asked to confirm ends on the confirmation, and
+ * grading that last message alone reports the string as never given.
+ *
+ * Scores whether the assistant copied the version string exactly.
+ */
 export default async function scoreVersionStringVerbatim(
   input: MetricInput,
 ): Promise<MetricResult> {
-  return gradeVersionString(await readAnswerTextForGrading(input.runId));
+  return gradeVersionString(await readAllAssistantMessagesText(input.runId));
 }

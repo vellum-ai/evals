@@ -1,7 +1,13 @@
 /**
- * Shared readers for "what the assistant said", in the three shapes
- * answer metrics need: the whole narration, the final answer message,
- * and the interleaved conversation.
+ * Shared readers for "what the assistant said", in the shapes answer
+ * metrics need: the whole narration, the final answer message, every
+ * message folded and joined, and the interleaved conversation.
+ *
+ * Which one a metric wants follows from what it grades. A claimed figure
+ * uses the final message, so a running number mentioned mid-work does
+ * not count. A verbatim string uses every message, because the ask is
+ * whether the assistant ever put that string in front of the user and a
+ * quoted string has no draft form a later message supersedes.
  *
  * Text-matching answer metrics must share the narration fallback:
  * grading the transcript alone silently scores 0 on exactly the runs
@@ -63,6 +69,47 @@ export async function readFinalAssistantMessageText(
     .filter((block) => block.kind === "text")
     .map((block) => block.text)
     .join("");
+}
+
+/**
+ * Every assistant message's text, folded back into whole messages and
+ * joined, with the narration fallback when none carries text.
+ *
+ * The join is on message boundaries, not on stream deltas. Joining the
+ * raw transcript turns instead splits a reply between every streamed
+ * fragment, and a verbatim comparison then sees `v 3 . 14 . 2` where the
+ * assistant wrote `v3.14.2`.
+ *
+ * This is what a verbatim metric grades: the question is whether the
+ * assistant ever put the string in front of the user, and unlike a
+ * running figure a quoted string has no draft form that a later message
+ * supersedes. A conversation that answers and is then asked to confirm
+ * ends on the confirmation, so grading the last message alone reports
+ * the string as never given.
+ */
+export async function readAllAssistantMessagesText(
+  runId: string,
+): Promise<string> {
+  const [turns, events] = await Promise.all([
+    readTranscript(runId),
+    readAssistantEvents(runId),
+  ]);
+  const text = joinAssistantMessagesText(buildTranscriptView(turns, events));
+  return text.trim() === "" ? await readAssistantNarration(runId) : text;
+}
+
+/** The pure half of {@link readAllAssistantMessagesText}. */
+export function joinAssistantMessagesText(items: TranscriptViewItem[]): string {
+  return items
+    .filter((item) => item.role === "assistant")
+    .map((item) =>
+      item.blocks
+        .filter((block) => block.kind === "text")
+        .map((block) => block.text)
+        .join(""),
+    )
+    .filter((text) => text.trim() !== "")
+    .join("\n");
 }
 
 /**

@@ -1,5 +1,5 @@
 import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
-import { readAnswerTextForGrading } from "../../../../../src/lib/common-metrics/assistant-answer";
+import { readAllAssistantMessagesText } from "../../../../../src/lib/common-metrics/assistant-answer";
 import { gradeVerbatimMention } from "../../../../../src/lib/common-metrics/verbatim-match";
 import { CHART_Y_AXIS_LABEL } from "../constants";
 
@@ -23,9 +23,18 @@ export function gradeAxisLabel(answer: string): MetricResult {
   });
 }
 
-/** Scores whether the assistant reproduced the chart's y-axis label. */
+/**
+ * A verbatim string is graded across every assistant message, not the
+ * final one alone. The question is whether the assistant ever put the
+ * string in front of the user; unlike a running figure, a quoted string
+ * has no draft form that a later message supersedes. A conversation that
+ * answers and is then asked to confirm ends on the confirmation, and
+ * grading that last message alone reports the string as never given.
+ *
+ * Scores whether the assistant reproduced the chart's y-axis label.
+ */
 export default async function scoreAxisLabelVerbatim(
   input: MetricInput,
 ): Promise<MetricResult> {
-  return gradeAxisLabel(await readAnswerTextForGrading(input.runId));
+  return gradeAxisLabel(await readAllAssistantMessagesText(input.runId));
 }

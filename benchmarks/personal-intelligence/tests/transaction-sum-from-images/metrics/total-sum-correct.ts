@@ -1,10 +1,5 @@
-import {
-  readAssistantEvents,
-  readTranscript,
-  type MetricInput,
-  type MetricResult,
-} from "../../../../../src/lib/metrics";
-import { buildTranscriptView } from "../../../../../src/lib/transcript-view";
+import type { MetricInput, MetricResult } from "../../../../../src/lib/metrics";
+import { readFinalAssistantMessageText } from "../../../../../src/lib/common-metrics/assistant-answer";
 import { classifyWithJudge } from "../../../../../src/lib/llm-judge";
 import { EXPECTED_TOTAL_USD, EXPECTED_TRANSACTION_COUNT } from "../constants";
 
@@ -23,31 +18,6 @@ const CENTS_TOLERANCE = 0.005;
  * is resolved on meaning rather than by a currency regex.
  */
 export type ClaimedTotalExtractor = (answer: string) => Promise<number | null>;
-
-/**
- * Reconstructs the assistant's final answer message.
- *
- * The Vellum stream lands one transcript turn per `assistant_text_delta`, so
- * the final answer is spread across many fragment turns. `buildTranscriptView`
- * folds consecutive deltas back into whole messages (splitting only on
- * simulator turns) and keeps thinking blocks separate, so the last assistant
- * message's text blocks are the actual answer rather than a trailing token
- * or an internal reasoning fragment.
- */
-async function readFinalAnswer(runId: string): Promise<string | undefined> {
-  const [turns, events] = await Promise.all([
-    readTranscript(runId),
-    readAssistantEvents(runId),
-  ]);
-  const finalMessage = buildTranscriptView(turns, events)
-    .filter((item) => item.role === "assistant")
-    .at(-1);
-  if (!finalMessage) return undefined;
-  return finalMessage.blocks
-    .filter((block) => block.kind === "text")
-    .map((block) => block.text)
-    .join("");
-}
 
 async function extractClaimedTotal(answer: string): Promise<number | null> {
   const verdict = await classifyWithJudge({
@@ -115,7 +85,7 @@ export default async function scoreTotalSumCorrect(
   input: MetricInput,
   extract: ClaimedTotalExtractor = extractClaimedTotal,
 ): Promise<MetricResult> {
-  const finalAnswer = await readFinalAnswer(input.runId);
+  const finalAnswer = await readFinalAssistantMessageText(input.runId);
 
   if (finalAnswer === undefined || finalAnswer.trim() === "") {
     return {

@@ -1,0 +1,17 @@
+{
+  "species": "vellum",
+  "description": "Vellum Assistant on the text-only GLM 5.2 (served by Fireworks), with the image-fallback plugin in handle-only mode: an image the agent reads is replaced by a marker naming the file, with no up-front vision call, so image_ask is the only route to the pixels. The handle-only half of the caption-versus-handle-only comparison on detailed image extraction. Identical to vellum-glm-text-only-caption apart from imageFallback.captionMode, so a difference between the two is the mode.",
+  "setup": [
+    "assistant keys set fireworks \"$FIREWORKS_API_KEY\"",
+    "assistant inference providers connections create fireworks-personal --provider fireworks --auth api_key --credential credential/fireworks/api_key",
+    "assistant config set llm.profiles.glm.provider fireworks",
+    "assistant config set llm.profiles.glm.provider_connection fireworks-personal",
+    "assistant config set llm.profiles.glm.model accounts/fireworks/models/glm-5p2",
+    "assistant config set llm.activeProfile glm",
+    "assistant config set imageFallback.captionMode handle-only"
+  ],
+  "branding": {
+    "color": "#2E9A4E",
+    "logo": "<svg viewBox=\"43 45 89.2 92.1\" xmlns=\"http://www.w3.org/2000/svg\"><path fill=\"currentColor\" d=\"M65.2927 45L87.5854 93.3893L109.79 45H132.171L87.4084 137.09L43 45H65.2927Z\"/></svg>"
+  }
+}

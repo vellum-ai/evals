@@ -58,6 +58,10 @@ For the end-to-end coding-cost baseline procedure (pre-fix assistant vs
 post-fix HEAD vs Hermes, with `evals compare` recipes), see
 [docs/runbooks/coding-cost-baseline.md](docs/runbooks/coding-cost-baseline.md).
 
+For detailed image extraction on a text-only model, and the caption
+versus handle-only comparison of the image-fallback plugin, see
+[docs/runbooks/image-extraction-modes.md](docs/runbooks/image-extraction-modes.md).
+
 ## Layout
 
 ```

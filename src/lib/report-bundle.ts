@@ -55,6 +55,10 @@ export interface BundleMetadata {
   scoreTotal: number;
   profileIds: string[];
   testIds: string[];
+  /** Session elapsed time, useful when benchmark workers overlap. */
+  wallClockMs?: number;
+  /** Aggregate assistant spend across every execution in the session. */
+  totalCostUsd?: number;
   cliArgv?: string[];
 }
 
@@ -125,6 +129,8 @@ function bundleMetadata(session: ReportSessionDetail): BundleMetadata {
     scoreTotal: session.scoreTotal,
     profileIds: session.profileIds,
     testIds: session.testIds,
+    wallClockMs: session.wallClockMs,
+    totalCostUsd: session.totalCostUsd,
     cliArgv: session.cliArgv,
   };
 }

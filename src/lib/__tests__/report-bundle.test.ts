@@ -162,6 +162,8 @@ describe("buildRunBundle", () => {
       sessionId,
       sessionLabel: "smoke",
       runCount: 2,
+      wallClockMs: 2000,
+      totalCostUsd: 0,
     });
     expect(metadata.testIds).toContain("t1");
     expect(metadata.profileIds).toEqual(expect.arrayContaining(["p1", "p2"]));

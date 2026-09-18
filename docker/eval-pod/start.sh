@@ -87,4 +87,28 @@ fi
 #    personal-intelligence`); don't hardcode `run` so the same entrypoint serves
 #    `benchmarks list`, `export`, etc. The no-args/help case is handled by the
 #    short-circuit at the top, so here we always have a real subcommand.
+#
+#    When the subcommand is `run` and the launcher has set
+#    EVAL_RESULTS_UPLOAD_URL, automatically export the results bundle to the
+#    QA dashboard after the run completes (pass or fail). The evals CLI's
+#    built-in auto-publish (in run.ts) handles this too, but the image may be
+#    stale; running `evals export` here is a belt-and-suspenders fallback that
+#    works regardless of image age. The export is best-effort: a failure to
+#    upload must not mask the run's own exit code.
+if [ "${1:-}" = "run" ] && [ -n "${EVAL_RESULTS_UPLOAD_URL:-}" ] && [ -n "${EVAL_RESULTS_SESSION_ID:-}" ]; then
+  set +e
+  evals "$@"
+  RUN_EXIT=$?
+  set -e
+  if [ "$RUN_EXIT" -ne 0 ]; then
+    echo "evals run exited with code $RUN_EXIT; attempting results export anyway" >&2
+  fi
+  echo "Exporting results to ${EVAL_RESULTS_UPLOAD_URL}…" >&2
+  set +e
+  evals export --session "$EVAL_RESULTS_SESSION_ID" --out "$EVAL_RESULTS_UPLOAD_URL" 2>&1 || \
+    echo "WARNING: results export failed (run exit code preserved)" >&2
+  set -e
+  exit "$RUN_EXIT"
+fi
+
 exec evals "$@"

@@ -23,7 +23,15 @@ import { buildBundleBuffer, buildRunBundle } from "./report-bundle";
 export async function pushBundleToUrl(
   sessionId: string,
   outUrl: string,
-  opts?: { authToken?: string; fetchImpl?: typeof fetch; timeoutMs?: number },
+  opts?: {
+    authToken?: string;
+    fetchImpl?: typeof fetch;
+    timeoutMs?: number;
+    /** Marks metadata as a live snapshot instead of the final bundle. */
+    isFinal?: boolean;
+    /** Suppress bundle-size logs for frequent incremental refreshes. */
+    quiet?: boolean;
+  },
 ): Promise<{ runId: string; viewUrl: string }> {
   // Policy: an explicit token wins; the env token is a fallback for
   // direct `evals export --out <url>` use, and its absence throws.
@@ -39,10 +47,14 @@ export async function pushBundleToUrl(
   const base = stripTrailingSlashes(outUrl);
   const uploadUrl = `${base}/api/evals/upload`;
 
-  console.log(`Bundling session ${sessionId}…`);
-  const files = await buildRunBundle(sessionId);
+  if (!opts?.quiet) console.log(`Bundling session ${sessionId}…`);
+  const files = await buildRunBundle(sessionId, {
+    isFinal: opts?.isFinal ?? true,
+  });
   const buffer = await buildBundleBuffer(files);
-  console.log(`Built bundle (${files.length} files, ${buffer.length} bytes)`);
+  if (!opts?.quiet) {
+    console.log(`Built bundle (${files.length} files, ${buffer.length} bytes)`);
+  }
 
   const formData = new FormData();
   formData.append(

@@ -159,6 +159,7 @@ describe("buildRunBundle", () => {
     expect(metadata).toMatchObject({
       kind: "evals-run-bundle",
       entry: "index.html",
+      isFinal: true,
       sessionId,
       sessionLabel: "smoke",
       runCount: 2,
@@ -167,6 +168,22 @@ describe("buildRunBundle", () => {
     });
     expect(metadata.testIds).toContain("t1");
     expect(metadata.profileIds).toEqual(expect.arrayContaining(["p1", "p2"]));
+  });
+
+  test("marks incremental snapshots as non-final", async () => {
+    const sessionId = `bundle-live-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    await seedRun({
+      sessionId,
+      profileId: "p1",
+      testId: "t1",
+      score: 1,
+    });
+
+    const files = await buildRunBundle(sessionId, { isFinal: false });
+    const metadataFile = files.find((file) => file.path === "metadata.json");
+    const metadata = JSON.parse(metadataFile?.content ?? "{}");
+
+    expect(metadata.isFinal).toBe(false);
   });
 
   test("throws for an unknown session", async () => {

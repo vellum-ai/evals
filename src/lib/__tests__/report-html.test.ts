@@ -191,6 +191,13 @@ const executionDetail: ReportRunDetail = {
   ],
   subprocessLogs: [],
   dockerArtifacts: [],
+  toolUsage: {
+    tools: [
+      { tool: "file_read", calls: 2, inputChars: 60, resultChars: 1200 },
+      { tool: "bash", calls: 1, inputChars: 24, resultChars: 90 },
+    ],
+    totalCalls: 3,
+  },
 };
 
 describe("report html", () => {
@@ -321,6 +328,19 @@ describe("report html", () => {
     expect(html).toContain("indexing-session-1");
     expect(html).toContain("Remembered");
     expect(html).not.toContain("No memory-formation events recorded.");
+  });
+
+  test("execution page renders the tool-usage table, and its empty state when nothing was called", () => {
+    const html = renderReportPage({ kind: "execution", run: executionDetail });
+    expect(html).toContain("Tool usage");
+    expect(html).toContain("file_read");
+    expect(html).toContain("Result chars");
+
+    const empty = renderReportPage({
+      kind: "execution",
+      run: { ...executionDetail, toolUsage: { tools: [], totalCalls: 0 } },
+    });
+    expect(empty).toContain("No tool calls recorded.");
   });
 
   test("execution page shows transcript, container logs, runner logs, and NO raw JSON section", () => {

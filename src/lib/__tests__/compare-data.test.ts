@@ -150,6 +150,34 @@ describe("parseExportJsonl", () => {
     });
   });
 
+  test("tolerates additive run fields it does not consume", () => {
+    // GIVEN an export whose execution rows carry the neutral toolUsage
+    // record alongside the fields compare joins on
+    const withToolUsage = BASELINE.split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => {
+        const row = JSON.parse(line) as {
+          type: string;
+          run?: Record<string, unknown>;
+        };
+        if (row.type === "execution" && row.run) {
+          row.run.toolUsage = {
+            tools: [
+              { tool: "file_read", calls: 3, inputChars: 90, resultChars: 400 },
+            ],
+            totalCalls: 3,
+          };
+        }
+        return JSON.stringify(row);
+      })
+      .join("\n");
+
+    // WHEN parsed THEN the extra field is ignored, not rejected
+    const parsed = parseExportJsonl(withToolUsage, "a.jsonl");
+    expect(parsed.executions).toHaveLength(2);
+    expect(parsed.executions[0].scoreTotal).toBe(0.5);
+  });
+
   test("rejects a file without a schemaVersion-2 metadata row", () => {
     // GIVEN a JSONL file that never declares its schema
     const text = `${JSON.stringify({ type: "session", session: {} })}\n`;

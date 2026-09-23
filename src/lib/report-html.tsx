@@ -610,6 +610,8 @@ pre.log { max-height: 480px; overflow: auto; padding: 16px; border-radius: 16px;
 .cost-diag-table th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; font-weight: 800; }
 .cost-requests { margin-top: 16px; }
 .cost-requests h3 { font-size: 16px; margin: 0 0 10px; letter-spacing: -.02em; }
+.tool-usage { margin-top: 22px; }
+.tool-usage h3 { font-size: 16px; margin: 0 0 10px; letter-spacing: -.02em; }
 .cost-req-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .cost-req-table th, .cost-req-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
 .cost-req-table th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; font-weight: 800; }
@@ -2284,6 +2286,56 @@ function LogsPanel({ run }: { run: ReportRunDetail }) {
 }
 
 /**
+ * Neutral record of the tool calls the run's event stream carried: one row
+ * per tool name, with call count and payload sizes. States only what
+ * happened, leaving any reading of it to whoever is investigating.
+ */
+function ToolUsage({ usage }: { usage: ReportRunDetail["toolUsage"] }) {
+  const inputChars = usage.tools.reduce((sum, e) => sum + e.inputChars, 0);
+  const resultChars = usage.tools.reduce((sum, e) => sum + e.resultChars, 0);
+  return (
+    <div className="tool-usage">
+      <h3>Tool usage</h3>
+      <p className="section-subtle">
+        Every tool call in this run&apos;s question-turn event stream, under the
+        tool&apos;s own name. Calls made inside a subagent, and the ingest-turn
+        calls of a V2 run, are not part of this stream.
+      </p>
+      {usage.tools.length === 0 ? (
+        <p className="muted">No tool calls recorded.</p>
+      ) : (
+        <table className="cost-req-table">
+          <thead>
+            <tr>
+              <th>Tool</th>
+              <th>Calls</th>
+              <th>Input chars</th>
+              <th>Result chars</th>
+            </tr>
+          </thead>
+          <tbody>
+            {usage.tools.map((entry) => (
+              <tr key={entry.tool}>
+                <td>{entry.tool}</td>
+                <td>{entry.calls}</td>
+                <td>{entry.inputChars}</td>
+                <td>{entry.resultChars}</td>
+              </tr>
+            ))}
+            <tr className="muted">
+              <td>Total</td>
+              <td>{usage.totalCalls}</td>
+              <td>{inputChars}</td>
+              <td>{resultChars}</td>
+            </tr>
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+/**
  * Tabbed body of the per-execution page. The four pills double as both the
  * run's headline stats (score / turn count / cost / log count) and the tab
  * controls — clicking one swaps the panel below. Implemented with hidden
@@ -2349,6 +2401,7 @@ function ExecutionTabs({ run }: { run: ReportRunDetail }) {
             reason and any structured metadata.
           </p>
           <MetricReportCard metrics={run.metrics} />
+          <ToolUsage usage={run.toolUsage} />
         </section>
 
         <section className="tabpanel panel-responses">

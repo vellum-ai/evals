@@ -21,6 +21,7 @@ import type { AgentEvent, AgentMessage } from "./adapter";
 import type { ProfileManifest } from "./profile";
 import type { TranscriptTurn } from "./transcript";
 import { buildTranscriptView } from "./transcript-view";
+import { summarizeToolUsage, type ToolUsageSummary } from "./tool-usage";
 
 /**
  * How many distinct assistant replies a run took — one per user↔assistant
@@ -160,6 +161,14 @@ export interface ReportRunDetail extends ReportRunSummary {
    * Empty when the run never hit the hatch catch path.
    */
   dockerArtifacts: DockerArtifactFile[];
+  /**
+   * Neutral per-tool call and payload tally over `assistantEvents` (see
+   * `tool-usage.ts`). Computed once here so the report page and the
+   * JSONL export read the same value instead of each re-walking the
+   * stream. Covers the question turn only, matching
+   * `assistantEventCount`.
+   */
+  toolUsage: ToolUsageSummary;
 }
 
 export type SessionStatus =
@@ -537,6 +546,7 @@ export async function readReportRun(runId: string): Promise<ReportRunDetail> {
     progressEvents,
     subprocessLogs: extras.subprocessLogs,
     dockerArtifacts: extras.dockerArtifacts,
+    toolUsage: summarizeToolUsage(assistantEvents),
   };
 }
 
@@ -558,6 +568,7 @@ async function listAllRunSummaries(): Promise<ReportRunSummary[]> {
       ingestAssistantEvents: _ingestAssistantEvents,
       simulatorMessages: _simulatorMessages,
       progressEvents: _progressEvents,
+      toolUsage: _toolUsage,
       ...summary
     }) => summary,
   );

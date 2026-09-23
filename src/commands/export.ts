@@ -29,6 +29,7 @@ import {
   readReportSession,
   readTestInSession,
 } from "../lib/report-data";
+import type { ToolUsageSummary } from "../lib/tool-usage";
 
 type ExportRecord =
   | {
@@ -63,6 +64,12 @@ type ExportRecord =
         totalInputTokens?: number;
         totalOutputTokens?: number;
         totalCostUsd?: number;
+        /**
+         * Neutral per-tool call and payload tally. Optional because
+         * exports written before this field exists do not carry it, so
+         * consumers must tolerate its absence.
+         */
+        toolUsage?: ToolUsageSummary;
       };
     };
 
@@ -151,6 +158,7 @@ export function registerExportCommand(program: Command): void {
               totalInputTokens: run.totalInputTokens,
               totalOutputTokens: run.totalOutputTokens,
               totalCostUsd: run.totalCostUsd,
+              toolUsage: run.toolUsage,
             },
           });
         }

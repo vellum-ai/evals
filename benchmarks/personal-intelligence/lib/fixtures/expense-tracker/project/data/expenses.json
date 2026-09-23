@@ -1,0 +1,137 @@
+[
+  {
+    "date": "2024-12-14",
+    "amount": 27.4,
+    "note": "holiday cards"
+  },
+  {
+    "date": "2024-12-19",
+    "amount": 63.15,
+    "note": "holiday gifts"
+  },
+  {
+    "date": "2024-12-28",
+    "amount": 12.05,
+    "note": "bus pass"
+  },
+  {
+    "date": "2025-01-03",
+    "amount": 48.92,
+    "note": "groceries"
+  },
+  {
+    "date": "2025-01-07",
+    "amount": 12.75,
+    "note": "bus pass"
+  },
+  {
+    "date": "2025-01-11",
+    "amount": 4.35,
+    "note": "coffee"
+  },
+  {
+    "date": "2025-01-18",
+    "amount": 61.2,
+    "note": "groceries"
+  },
+  {
+    "date": "2025-01-22",
+    "amount": 15,
+    "note": "book club dues"
+  },
+  {
+    "date": "2025-01-29",
+    "amount": 23.48,
+    "note": "hardware store"
+  },
+  {
+    "date": "2025-02-02",
+    "amount": 52.13,
+    "note": "groceries"
+  },
+  {
+    "date": "2025-02-06",
+    "amount": 12.75,
+    "note": "bus pass"
+  },
+  {
+    "date": "2025-02-09",
+    "amount": 8.6,
+    "note": "coffee"
+  },
+  {
+    "date": "2025-02-14",
+    "amount": 34.99,
+    "note": "haircut"
+  },
+  {
+    "date": "2025-02-19",
+    "amount": 15,
+    "note": "book club dues"
+  },
+  {
+    "date": "2025-02-25",
+    "amount": 19.87,
+    "note": "pharmacy"
+  },
+  {
+    "date": "2025-03-01",
+    "amount": 57.44,
+    "note": "groceries"
+  },
+  {
+    "date": "2025-03-05",
+    "amount": 12.75,
+    "note": "bus pass"
+  },
+  {
+    "date": "2025-03-12",
+    "amount": 6.25,
+    "note": "coffee"
+  },
+  {
+    "date": "2025-03-16",
+    "amount": 21.3,
+    "note": "farmers market"
+  },
+  {
+    "date": "2025-03-20",
+    "amount": 15,
+    "note": "book club dues"
+  },
+  {
+    "date": "2025-03-27",
+    "amount": 44.68,
+    "note": "phone bill"
+  },
+  {
+    "date": "2025-04-02",
+    "amount": 50.31,
+    "note": "groceries"
+  },
+  {
+    "date": "2025-04-08",
+    "amount": 12.75,
+    "note": "bus pass"
+  },
+  {
+    "date": "2025-04-13",
+    "amount": 7.95,
+    "note": "coffee"
+  },
+  {
+    "date": "2025-04-17",
+    "amount": 28.4,
+    "note": "movie tickets"
+  },
+  {
+    "date": "2025-04-21",
+    "amount": 15,
+    "note": "book club dues"
+  },
+  {
+    "date": "2025-04-30",
+    "amount": 33.62,
+    "note": "gas station"
+  }
+]

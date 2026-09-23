@@ -1,0 +1,28 @@
+DATE        AMOUNT  NOTE
+2024-12-14  $27.40  holiday cards
+2024-12-19  $63.15  holiday gifts
+2024-12-28  $12.05  bus pass
+2025-01-03  $48.92  groceries
+2025-01-07  $12.75  bus pass
+2025-01-11   $4.35  coffee
+2025-01-18  $61.20  groceries
+2025-01-22  $15.00  book club dues
+2025-01-29  $23.48  hardware store
+2025-02-02  $52.13  groceries
+2025-02-06  $12.75  bus pass
+2025-02-09   $8.60  coffee
+2025-02-14  $34.99  haircut
+2025-02-19  $15.00  book club dues
+2025-02-25  $19.87  pharmacy
+2025-03-01  $57.44  groceries
+2025-03-05  $12.75  bus pass
+2025-03-12   $6.25  coffee
+2025-03-16  $21.30  farmers market
+2025-03-20  $15.00  book club dues
+2025-03-27  $44.68  phone bill
+2025-04-02  $50.31  groceries
+2025-04-08  $12.75  bus pass
+2025-04-13   $7.95  coffee
+2025-04-17  $28.40  movie tickets
+2025-04-21  $15.00  book club dues
+2025-04-30  $33.62  gas station

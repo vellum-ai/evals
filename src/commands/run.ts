@@ -12,6 +12,7 @@ import {
 } from "../lib/metrics";
 import { reapAbandonedEvalContainers } from "../lib/adapters/docker-reaper";
 import { autoPublishSession } from "../lib/auto-publish";
+import { createIncrementalSessionPublisher } from "../lib/incremental-publish";
 import { loadBenchmark } from "../lib/benchmark";
 import { DEFAULT_BENCHMARK_ID } from "../lib/catalog";
 import {
@@ -437,7 +438,15 @@ export function registerRunCommand(program: Command): void {
         const bridge = emitter
           ? createRunEventsBridge({ emitter, sessionId: session })
           : undefined;
-        if (bridge) setRunMetadataObserver(bridge.observer);
+        const incrementalPublisher = createIncrementalSessionPublisher({
+          sessionId: session,
+        });
+        if (bridge || incrementalPublisher) {
+          setRunMetadataObserver((metadata) => {
+            bridge?.observer(metadata);
+            incrementalPublisher?.observer(metadata);
+          });
+        }
         activeEmitter = emitter;
         activeBridge = bridge;
 
@@ -504,13 +513,19 @@ export function registerRunCommand(program: Command): void {
             // dashboard draining at its own pace is acceptable since the
             // very next step is an upload to that same dashboard.
             await emitter.settle();
-            setRunMetadataObserver(undefined);
-            // Clean finish — clear the signal handlers' refs so a signal
-            // arriving from here on exits immediately without emitting a
-            // second run_finished.
-            activeEmitter = undefined;
-            activeBridge = undefined;
           }
+
+          // Drain every requested partial upload before the authoritative
+          // final upload below. Otherwise a slower, older snapshot could land
+          // after the final bundle and regress the iframe back to partial data.
+          await incrementalPublisher?.settle();
+          setRunMetadataObserver(undefined);
+
+          // Clean finish — clear the signal handlers' refs so a signal
+          // arriving from here on exits immediately without emitting a
+          // second run_finished.
+          activeEmitter = undefined;
+          activeBridge = undefined;
         }
 
         if (anyFailed) {

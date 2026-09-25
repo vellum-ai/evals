@@ -46,6 +46,8 @@ export interface BundleMetadata {
   /** Entry HTML file to open when viewing the bundle. */
   entry: typeof BUNDLE_ENTRY;
   exportedAt: string;
+  /** False for a live snapshot, true for the authoritative final upload. */
+  isFinal: boolean;
   sessionId: string;
   sessionLabel?: string;
   status: SessionStatus;
@@ -112,12 +114,16 @@ function rewriteRoute(href: string): string | undefined {
   return undefined;
 }
 
-function bundleMetadata(session: ReportSessionDetail): BundleMetadata {
+function bundleMetadata(
+  session: ReportSessionDetail,
+  isFinal: boolean,
+): BundleMetadata {
   return {
     schemaVersion: 1,
     kind: "evals-run-bundle",
     entry: BUNDLE_ENTRY,
     exportedAt: new Date().toISOString(),
+    isFinal,
     sessionId: session.sessionId,
     sessionLabel: session.sessionLabel,
     status: session.status,
@@ -153,7 +159,10 @@ export class NoSessionError extends Error {
  * via the same report-data layer the local server uses, so the exported pages
  * are byte-for-byte the server's pages with links rewritten.
  */
-export async function buildRunBundle(sessionId: string): Promise<BundleFile[]> {
+export async function buildRunBundle(
+  sessionId: string,
+  options: { isFinal?: boolean } = {},
+): Promise<BundleFile[]> {
   const session = await readReportSession(sessionId);
   if (!session) {
     throw new NoSessionError(sessionId);
@@ -212,7 +221,11 @@ export async function buildRunBundle(sessionId: string): Promise<BundleFile[]> {
 
   files.push({
     path: "metadata.json",
-    content: `${JSON.stringify(bundleMetadata(session), null, 2)}\n`,
+    content: `${JSON.stringify(
+      bundleMetadata(session, options.isFinal ?? true),
+      null,
+      2,
+    )}\n`,
   });
 
   return files;

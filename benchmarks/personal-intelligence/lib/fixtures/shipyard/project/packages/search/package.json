@@ -1,0 +1,8 @@
+{
+  "name": "@shipyard/search",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Finding a product by what a shopper typed",
+  "type": "module",
+  "main": "src/index.ts"
+}

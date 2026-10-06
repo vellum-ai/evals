@@ -1,0 +1,8 @@
+{
+  "name": "@shipyard/billing",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Charges a customer's card for an invoice",
+  "type": "module",
+  "main": "src/index.ts"
+}

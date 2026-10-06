@@ -1,0 +1,25 @@
+{
+  "name": "shipyard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/core",
+    "packages/invoicing",
+    "packages/billing",
+    "packages/catalog",
+    "packages/checkout",
+    "packages/shipping",
+    "packages/inventory",
+    "packages/notifications",
+    "packages/reporting",
+    "packages/scheduling",
+    "packages/auth",
+    "packages/audit",
+    "packages/returns",
+    "packages/search"
+  ],
+  "scripts": {
+    "check": "bun run check.ts"
+  }
+}

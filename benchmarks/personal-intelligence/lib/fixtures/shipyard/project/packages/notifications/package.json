@@ -1,0 +1,8 @@
+{
+  "name": "@shipyard/notifications",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The messages the shop sends its customers",
+  "type": "module",
+  "main": "src/index.ts"
+}

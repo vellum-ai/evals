@@ -1,0 +1,8 @@
+{
+  "name": "@shipyard/auth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Who is allowed to open the till",
+  "type": "module",
+  "main": "src/index.ts"
+}

@@ -9,6 +9,7 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 
 import type { AgentEvent, AgentMessage } from "./adapter";
+import type { AssistantSourceRecord } from "./assistant-source";
 import type { ProfileManifest } from "./profile";
 import type { EvalProgressEvent } from "./runner/progress";
 import type { TestDef } from "./test-def";
@@ -148,6 +149,15 @@ export interface RunMetadata {
    * Optional because legacy run.json files predate the field.
    */
   profileManifest?: ProfileManifest;
+  /**
+   * The parent-repo tree the assistant under test was built from (path,
+   * commit, subject, dirty). Recorded for species the harness builds
+   * from source — today, Vellum — so a baseline-versus-fix comparison
+   * can be verified from the artifacts rather than from whoever
+   * remembers which `EVALS_ASSISTANT_SOURCE` was exported. Optional:
+   * absent on other species and on runs that predate the field.
+   */
+  assistantSource?: AssistantSourceRecord;
   testId: string;
   status: "running" | "completed" | "failed" | "abandoned" | "unknown";
   startedAt?: string;

@@ -1,0 +1,8 @@
+{
+  "name": "@shipyard/audit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The trail of who changed what",
+  "type": "module",
+  "main": "src/index.ts"
+}
